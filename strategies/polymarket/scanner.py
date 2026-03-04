@@ -161,20 +161,54 @@ class PolymarketScanner:
     # ─────────────────────────────────────────────
 
     def _fetch_markets(self) -> list[dict]:
-        """Paginação completa da CLOB API + filtragem."""
+        """Paginação completa da CLOB API + filtragem.
+
+        Inclui delay entre páginas (evita rate limit) e retry com backoff
+        em caso de erro transiente (a API corta conexão após muitos requests seguidos).
+        """
         all_markets: list[dict] = []
         next_cursor: str | None = None
+        page = 0
+        _PAGE_DELAY = 0.3        # segundos entre páginas
+        _MAX_RETRIES = 3         # retries por página com erro
+        _RETRY_BASE_DELAY = 5.0  # backoff: 5s, 10s, 20s
 
         while not self._stop_event.is_set():
-            try:
-                # get_markets() só aceita next_cursor — filtragem feita em _filter_and_format()
-                if next_cursor:
-                    resp = self._client.get_markets(next_cursor=next_cursor)
-                else:
-                    resp = self._client.get_markets()
-            except Exception as exc:
-                log.error("CLOB get_markets erro: %s", exc)
-                break
+            # Delay entre páginas para evitar rate limit
+            if page > 0:
+                time.sleep(_PAGE_DELAY)
+
+            resp = None
+            for retry in range(_MAX_RETRIES):
+                if self._stop_event.is_set():
+                    break
+                try:
+                    if next_cursor:
+                        resp = self._client.get_markets(next_cursor=next_cursor)
+                    else:
+                        resp = self._client.get_markets()
+                    break  # sucesso
+                except Exception as exc:
+                    wait = _RETRY_BASE_DELAY * (2 ** retry)
+                    log.warning(
+                        "CLOB get_markets erro (página %d, tentativa %d/%d): %s — retry em %.0fs",
+                        page, retry + 1, _MAX_RETRIES, exc, wait,
+                    )
+                    if retry < _MAX_RETRIES - 1:
+                        # Espera com checagem de stop a cada segundo
+                        for _ in range(int(wait)):
+                            if self._stop_event.is_set():
+                                break
+                            time.sleep(1)
+                    else:
+                        log.error(
+                            "CLOB get_markets: falha após %d tentativas na página %d — "
+                            "retornando %d mercados coletados até agora",
+                            _MAX_RETRIES, page, len(all_markets),
+                        )
+
+            if resp is None:
+                break  # todas as retries falharam ou stop sinalizado
 
             # Resposta pode ser lista direta ou dict paginado
             if isinstance(resp, list):
@@ -186,6 +220,10 @@ class PolymarketScanner:
                 next_cursor = resp.get("next_cursor")
                 if not next_cursor or next_cursor in ("LTE=", ""):
                     break
+
+            page += 1
+            if page % 50 == 0:
+                log.info("Scanner: %d páginas processadas (%d mercados)...", page, len(all_markets))
 
         return self._filter_and_format(all_markets)
 
