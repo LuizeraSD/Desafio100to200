@@ -98,10 +98,10 @@ async def _load_markets_with_retry(ex: ccxt.Exchange, label: str) -> bool:
             await ex.load_markets()
             log.info("%s: %d símbolos carregados", label, len(ex.markets))
             return True
-        except ccxt.PermissionDenied as exc:
-            # HTTP 451 (geo-bloqueio) ou chave inválida — não adianta retentar
+        except ccxt.AuthenticationError as exc:
+            # API key inválida, IP não permitido, ou sem permissão — permanente
             log.error(
-                "%s: acesso permanentemente negado (geo-bloqueio/permissão): %s",
+                "%s: autenticação falhou (key/IP/permissão): %s",
                 label, exc,
             )
             return False
@@ -125,6 +125,12 @@ async def _load_markets_with_retry(ex: ccxt.Exchange, label: str) -> bool:
                 label, attempt, len(delays), exc, delay,
             )
             await asyncio.sleep(delay)
+        except ccxt.ExchangeError as exc:
+            # Qualquer outro erro da exchange (rate limit, manutenção, etc.)
+            log.error(
+                "%s: erro de exchange não recuperável: %s", label, exc,
+            )
+            return False
     return False  # nunca alcançado, mas satisfaz o type checker
 
 

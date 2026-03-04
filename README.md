@@ -103,7 +103,7 @@ streamlit run dashboard/app.py
 
 ### 4. Comandos Telegram
 
-```
+```text
 /status   — resumo do portfólio e status de cada perna
 /pnl      — P&L detalhado (realizado + não realizado)
 /stop     — parada de emergência (fecha todas as posições)
@@ -111,115 +111,234 @@ streamlit run dashboard/app.py
 
 ---
 
-## Deploy em Produção — Digital Ocean Apps
+## Deploy em Produção — Digital Ocean Droplet
+
+### Por que Droplet e não App Platform?
+
+- **IP fixo** — necessário para whitelist nas exchanges (Binance, Bybit)
+- **Disco persistente** — `state/*.json` sobrevive a restarts e reboots
+- **Controle total** — SSH direto, logs em tempo real, fácil troubleshooting
+- **Custo similar** — Basic Droplet $6/mês (1 vCPU, 1GB RAM) ou $12/mês (2GB RAM)
 
 ### Arquitetura
 
-```
-DO App: desafio-100-200
-└── Web Service "bot" (basic-xs: 1GB RAM, $12/mês)
-    ├── python orchestrator/main.py    (background)
-    ├── streamlit run dashboard/app.py (porta $PORT, health check)
-    └── Volume persistente /app/state  (crash recovery, $0.10/mês)
+```text
+DO Droplet: desafio-100-200 (Frankfurt — fra1)
+├── IP fixo (Reserved IP vinculado ao Droplet)
+├── python orchestrator/main.py    (systemd service, reinicia automático)
+├── streamlit run dashboard/app.py (porta 8501, acessível via IP:8501)
+└── /root/desafio/state/           (crash recovery, disco persistente)
 ```
 
 ### Passo a Passo
 
-#### 1. Repositório GitHub
+#### 1. Criar Droplet
+
+1. Acesse [cloud.digitalocean.com/droplets](https://cloud.digitalocean.com/droplets)
+2. **Create Droplet** com as seguintes opções:
+   - **Região:** Frankfurt (`fra1`) — Binance não é geo-bloqueada na Europa
+   - **Imagem:** Ubuntu 24.04 LTS
+   - **Plano:** Basic → Regular → **$6/mês** (1 vCPU, 1 GB RAM) ou **$12/mês** (2 GB) se quiser mais folga
+   - **Authentication:** SSH key (recomendado) ou senha
+3. Após criação, anote o **IP público** do Droplet
+
+#### 2. Vincular Reserved IP (IP fixo)
+
+1. No painel DO → **Networking → Reserved IPs**
+2. **Assign Reserved IP** ao seu Droplet
+3. Anote o IP fixo — este é o IP que você usará na whitelist das exchanges
+
+> O Reserved IP é gratuito enquanto vinculado a um Droplet ativo.
+
+#### 3. Configurar API Keys nas Exchanges
+
+Com o IP fixo em mãos, configure nas exchanges:
+
+- **Binance:** API Management → Edit → IP Access → adicionar o Reserved IP
+- **Bybit:** API Management → Edit → IP restriction → adicionar o Reserved IP
+
+#### 4. Setup do Servidor
+
+Conecte via SSH e execute:
 
 ```bash
-# Garanta que .env não está no repo
-git status   # .env deve aparecer como ignored
+ssh root@SEU_IP_FIXO
 
-git add .
-git commit -m "feat: production-ready deploy"
-git push origin main
+# Atualizar sistema
+apt update && apt upgrade -y
+
+# Instalar dependências do sistema (Ubuntu 24.04 já inclui Python 3.12)
+apt install -y python3-venv python3-pip git
+
+# Clonar o repositório
+cd /root
+git clone https://github.com/SEU_USUARIO/desafio-100-200.git desafio
+cd desafio
+
+# Criar ambiente virtual e instalar dependências
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Criar diretórios necessários
+mkdir -p state logs
 ```
 
-#### 2. Criar App no Digital Ocean
-
-1. Acesse [cloud.digitalocean.com/apps](https://cloud.digitalocean.com/apps)
-2. Clique em **Create App**
-3. Conecte seu repositório GitHub
-4. Selecione a branch `main`
-5. O DO detectará o `Dockerfile` automaticamente
-
-#### 3. Configurar o App Spec
-
-Edite `.do/app.yaml` substituindo o repo:
-
-```yaml
-github:
-  repo: SEU_USUARIO/desafio-100-200
-  branch: main
-```
-
-No painel DO, vá em **Settings → App Spec** e cole o conteúdo do arquivo `.do/app.yaml`.
-
-#### 4. Configurar Secrets (painel DO)
-
-Em **Settings → App-Level Environment Variables**, adicione como **Encrypted**:
-
-| Variável | Valor |
-|----------|-------|
-| `PAPER_TRADE` | `true` *(começa em paper)* |
-| `DASHBOARD_PASSWORD` | senha de sua escolha |
-| `BINANCE_API_KEY` | sua key |
-| `BINANCE_SECRET` | seu secret |
-| `BYBIT_API_KEY` | sua key |
-| `BYBIT_SECRET` | seu secret |
-| `POLY_API_KEY` | sua key |
-| `POLY_SECRET` | seu secret |
-| `POLY_PASSPHRASE` | sua passphrase |
-| `ANTHROPIC_API_KEY` | sua key |
-| `TELEGRAM_BOT_TOKEN` | token do bot |
-| `TELEGRAM_CHAT_ID` | seu chat ID |
-
-#### 5. Estado e Persistência — Limitação do DO App Platform
-
-> ⚠ **DO App Platform não suporta volumes persistentes.** O filesystem é efêmero — resetado a cada restart ou redeploy.
-
-**O que isso significa na prática:**
-
-| Estado | Impacto de um restart |
-| ------ | --------------------- |
-| Grid Bot (Binance) | Sem impacto — reconcilia posições com a exchange no boot |
-| Momentum (Bybit) | Sem impacto — reconcilia posições com a exchange no boot |
-| Polymarket | Posições abertas são perdidas — risco de double-bet |
-| Equity history | Curva do dashboard é resetada |
-
-**Para o desafio de 5 dias**, o risco prático é baixo se o container não reiniciar (DO normalmente mantém containers estáveis por semanas). Para mitigar:
-
-- Configure Telegram (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) para receber alertas imediatos de qualquer crash
-- Evite redeploys desnecessários enquanto houver posições Polymarket abertas
-
-**Para produção de longo prazo**, use [DO Spaces](https://docs.digitalocean.com/products/spaces/) como storage S3-compatível (plano básico: $5/mês) ou migre para [Fly.io](https://fly.io/) que suporta volumes persistentes nativamente.
-
-#### 6. Deploy
+#### 5. Configurar Variáveis de Ambiente
 
 ```bash
-# Clique em "Deploy" no painel DO
-# Aguarde o build (~3-5 minutos)
-# Health check via Streamlit: /_stcore/health
+cp .env.example .env
+nano .env
+```
+
+Preencha todas as variáveis:
+
+```env
+PAPER_TRADE=true
+
+BINANCE_API_KEY=...
+BINANCE_SECRET=...
+BYBIT_API_KEY=...
+BYBIT_SECRET=...
+POLY_API_KEY=...
+POLY_SECRET=...
+POLY_PASSPHRASE=...
+ANTHROPIC_API_KEY=sk-ant-...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+DASHBOARD_PASSWORD=...
+```
+
+#### 6. Criar Serviços systemd
+
+Crie o serviço do orchestrator:
+
+```bash
+cat > /etc/systemd/system/desafio-orchestrator.service << 'EOF'
+[Unit]
+Description=Desafio 100-200 Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/desafio
+EnvironmentFile=/root/desafio/.env
+ExecStart=/root/desafio/venv/bin/python -u orchestrator/main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/root/desafio/logs/orchestrator.log
+StandardError=append:/root/desafio/logs/orchestrator.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Crie o serviço do dashboard:
+
+```bash
+cat > /etc/systemd/system/desafio-dashboard.service << 'EOF'
+[Unit]
+Description=Desafio 100-200 Dashboard
+After=desafio-orchestrator.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/desafio
+EnvironmentFile=/root/desafio/.env
+ExecStart=/root/desafio/venv/bin/streamlit run dashboard/app.py \
+    --server.port 8501 \
+    --server.headless true \
+    --server.address 0.0.0.0 \
+    --server.enableCORS false \
+    --server.enableXsrfProtection false
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Ative e inicie os serviços:
+
+```bash
+systemctl daemon-reload
+systemctl enable desafio-orchestrator desafio-dashboard
+systemctl start desafio-orchestrator desafio-dashboard
 ```
 
 #### 7. Validar
 
-Após deploy bem-sucedido:
+```bash
+# Status dos serviços
+systemctl status desafio-orchestrator
+systemctl status desafio-dashboard
 
-1. Acesse a URL do app (ex: `https://desafio-100-200-xxxxx.ondigitalocean.app`)
-2. Dashboard deve aparecer com senha configurada
-3. Telegram: envie `/status` ao bot
-4. Verifique os logs em **Runtime Logs** no painel DO
+# Logs em tempo real do orchestrator
+journalctl -u desafio-orchestrator -f
+
+# Ou diretamente no arquivo
+tail -f /root/desafio/logs/orchestrator.log
+```
+
+- Dashboard: acesse `http://SEU_IP_FIXO:8501` no navegador
+- Telegram: envie `/status` ao bot
+
+#### 8. Comandos Úteis
+
+```bash
+# Reiniciar orchestrator (ex: após mudar .env)
+systemctl restart desafio-orchestrator
+
+# Parar tudo
+systemctl stop desafio-orchestrator desafio-dashboard
+
+# Atualizar código
+cd /root/desafio
+git pull origin main
+source venv/bin/activate
+pip install -r requirements.txt
+systemctl restart desafio-orchestrator desafio-dashboard
+
+# Ver logs das últimas 2 horas
+journalctl -u desafio-orchestrator --since "2 hours ago"
+```
 
 ### Ativar Live Trading
 
 Após mínimo **48 horas em paper trading** sem erros:
 
-1. No painel DO → Settings → Environment Variables
-2. Altere `PAPER_TRADE` de `true` para `false`
-3. Clique em **Save** → **Deploy** (manual)
-4. Monitore a primeira hora intensamente via Telegram
+```bash
+# 1. Editar .env
+nano /root/desafio/.env
+# Alterar PAPER_TRADE=true → PAPER_TRADE=false
+
+# 2. Reiniciar orchestrator
+systemctl restart desafio-orchestrator
+
+# 3. Acompanhar o boot em tempo real
+journalctl -u desafio-orchestrator -f
+
+# 4. Monitorar a primeira hora via Telegram
+```
+
+### Segurança Básica do Droplet
+
+```bash
+# Firewall: liberar apenas SSH e Dashboard
+ufw allow 22/tcp      # SSH
+ufw allow 8501/tcp    # Dashboard Streamlit
+ufw enable
+
+# (Opcional) Trocar porta SSH padrão
+# nano /etc/ssh/sshd_config → Port 2222
+# ufw allow 2222/tcp && ufw delete allow 22/tcp
+# systemctl restart sshd
+```
 
 ---
 
@@ -255,7 +374,7 @@ docker run -p 8501:8501 --env-file .env desafio-100-200
 
 ## Estrutura do Projeto
 
-```
+```text
 desafio-100-200/
 ├── orchestrator/
 │   ├── main.py           # Loop central, rebalanceamento, circuit breakers
@@ -284,9 +403,9 @@ desafio-100-200/
 │   ├── momentum.json     # Trades abertos
 │   └── polymarket.json   # Apostas abertas
 │
-├── Dockerfile            # Imagem para Digital Ocean Apps
-├── start.sh              # Entrypoint: orchestrator + Streamlit
-├── .do/app.yaml          # Digital Ocean App spec
+├── Dockerfile            # Imagem Docker (dev local ou alternativo)
+├── start.sh              # Entrypoint Docker: orchestrator + Streamlit
+├── .do/app.yaml          # DO App Platform spec (alternativo ao Droplet)
 └── docker-compose.yml    # Desenvolvimento local com Docker
 ```
 
@@ -297,8 +416,14 @@ desafio-100-200/
 ### Bot não conecta na Binance/Bybit
 
 - Verifique se as API keys têm permissão Futures
+- Confirme que o **Reserved IP do Droplet** está na whitelist da exchange
 - Confirme que a conta tem saldo em Futures (não só Spot)
 - No paper trading, a conexão é feita mas ordens são simuladas
+
+### Binance: HTTP 451 / "restricted location"
+
+- A Binance bloqueia requests de IPs nos EUA. Use Droplet na Europa (Frankfurt `fra1`)
+- O orchestrator detecta este erro automaticamente e desabilita a perna (sem crash)
 
 ### Polymarket: 0 candidatos encontrados
 
@@ -306,20 +431,25 @@ desafio-100-200/
 - Cache é salvo em `state/polymarket_candidates.json` (válido por 4h)
 - Se persistir, verifique se `ANTHROPIC_API_KEY` está configurada
 
-### Dashboard não aparece / health check falha
+### Dashboard não aparece
 
-- Aguarde 60s após o deploy (o orchestrator carrega mercados antes do Streamlit subir)
-- Verifique logs em Runtime Logs no painel DO
-- O health check do DO usa `/_stcore/health` (endpoint nativo do Streamlit)
+- Verifique se o serviço está ativo: `systemctl status desafio-dashboard`
+- Confirme que a porta 8501 está liberada no firewall: `ufw status`
+- Teste localmente: `curl http://localhost:8501/_stcore/health`
 
 ### Orchestrator crasha em loop
 
-- Verifique os logs: `docker logs <container>` ou Runtime Logs no DO
-- Erro de DNS no Windows: resolvido com `ThreadedResolver` (já implementado)
-- Erro de API key: confirme variáveis de ambiente no painel DO
+- Verifique os logs: `journalctl -u desafio-orchestrator -f`
+- O systemd reinicia automaticamente após 10s (`RestartSec=10`)
+- Erro de API key: confirme variáveis em `/root/desafio/.env`
+- Erro de DNS no Windows (dev local): resolvido com `ThreadedResolver` (já implementado)
 
-### Estado perdido após redeploy
+### Atualizar código em produção
 
-- Confirme que o volume `state-data` está montado em `/app/state`
-- O volume DO é persistente — sobrevive a deploys e restarts
-- Se não houver volume, o bot recria o estado do zero (reconcilia com a exchange)
+```bash
+cd /root/desafio
+git pull origin main
+source venv/bin/activate
+pip install -r requirements.txt
+systemctl restart desafio-orchestrator desafio-dashboard
+```

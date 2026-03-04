@@ -388,30 +388,37 @@ pip install -r requirements.txt
 - [ ] Backup do .env em local seguro (nunca no repo)
 - [ ] 48h mínimo em paper trading antes de ativar live
 
-### Deploy em Produção (Digital Ocean Apps)
+### Deploy em Produção (Digital Ocean Droplet)
 
 Ver [README.md](README.md) para o guia passo-a-passo completo.
 
-**Arquivos de infraestrutura:**
-- `Dockerfile` — imagem Python 3.11-slim
-- `start.sh` — inicia orchestrator + Streamlit no mesmo container
-- `.do/app.yaml` — spec do DO App (editar repo GitHub antes de usar)
+**Por que Droplet (e não App Platform):**
 
-**Estrutura no DO:**
-```
-DO App: desafio-100-200
-└── Web Service "bot" (basic-xs: 1GB RAM, $12/mês)
-    ├── Processo 1: python orchestrator/main.py
-    ├── Processo 2: streamlit run dashboard/app.py
-    └── Volume persistente: /app/state/ (crash recovery)
+- IP fixo (Reserved IP) — necessário para whitelist nas exchanges
+- Disco persistente nativo — `state/*.json` sobrevive a restarts
+- SSH direto para troubleshooting e logs em tempo real
+
+**Arquivos de infraestrutura:**
+
+- `Dockerfile` + `start.sh` — alternativa Docker para dev local
+- `.do/app.yaml` — spec DO App Platform (alternativo, não recomendado)
+
+**Estrutura no Droplet:**
+
+```text
+DO Droplet: desafio-100-200 (Frankfurt — fra1)
+├── IP fixo (Reserved IP — whitelist nas exchanges)
+├── systemd: desafio-orchestrator.service (reinicia automático)
+├── systemd: desafio-dashboard.service    (porta 8501)
+└── /root/desafio/state/                  (crash recovery, persistente)
 ```
 
 **Ativar live trading:**
-1. Validar 48h em paper trading no DO
-2. No painel DO → Settings → Environment Variables
-3. Alterar `PAPER_TRADE` de `"true"` para `"false"`
-4. Fazer redeploy manual
-5. Monitorar primeira hora via Telegram
+
+1. Validar 48h em paper trading no Droplet
+2. Editar `.env`: `PAPER_TRADE=false`
+3. `systemctl restart desafio-orchestrator`
+4. Monitorar primeira hora via Telegram
 
 ---
 
