@@ -80,8 +80,6 @@ services:
         scope: RUN_TIME
         type: SECRET
 
-    # ── Volume persistente para crash recovery ──────────────────────────────
-    # Persiste state/*.json entre restarts e redeploys ($0.10/GB/mês)
-    storage_mounts:
-      - name: state-data
-        mount_path: /app/state
+    # NOTA: DO App Platform não suporta volumes persistentes.
+    # O estado em /app/state/ é efêmero — resetado a cada restart/redeploy.
+    # Alternativas: DO Spaces (S3) ou migrar para Fly.io (suporta volumes nativos).

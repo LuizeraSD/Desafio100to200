@@ -175,17 +175,25 @@ Em **Settings → App-Level Environment Variables**, adicione como **Encrypted**
 | `TELEGRAM_BOT_TOKEN` | token do bot |
 | `TELEGRAM_CHAT_ID` | seu chat ID |
 
-#### 5. Criar Volume Persistente
+#### 5. Estado e Persistência — Limitação do DO App Platform
 
-Em **Settings → App Spec**, confirme que está presente:
+> ⚠ **DO App Platform não suporta volumes persistentes.** O filesystem é efêmero — resetado a cada restart ou redeploy.
 
-```yaml
-storage_mounts:
-  - name: state-data
-    mount_path: /app/state
-```
+**O que isso significa na prática:**
 
-Ou pelo painel: **Create Component → Storage** → nome `state-data`, mount `/app/state`, 1 GB.
+| Estado | Impacto de um restart |
+| ------ | --------------------- |
+| Grid Bot (Binance) | Sem impacto — reconcilia posições com a exchange no boot |
+| Momentum (Bybit) | Sem impacto — reconcilia posições com a exchange no boot |
+| Polymarket | Posições abertas são perdidas — risco de double-bet |
+| Equity history | Curva do dashboard é resetada |
+
+**Para o desafio de 5 dias**, o risco prático é baixo se o container não reiniciar (DO normalmente mantém containers estáveis por semanas). Para mitigar:
+
+- Configure Telegram (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) para receber alertas imediatos de qualquer crash
+- Evite redeploys desnecessários enquanto houver posições Polymarket abertas
+
+**Para produção de longo prazo**, use [DO Spaces](https://docs.digitalocean.com/products/spaces/) como storage S3-compatível (plano básico: $5/mês) ou migre para [Fly.io](https://fly.io/) que suporta volumes persistentes nativamente.
 
 #### 6. Deploy
 
