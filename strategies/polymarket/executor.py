@@ -85,18 +85,32 @@ class PolymarketModel(BaseStrategy):
             api_key    = os.getenv("POLY_API_KEY", "").strip()
             api_secret = os.getenv("POLY_SECRET", "").strip()
             passphrase = os.getenv("POLY_PASSPHRASE", "").strip()
-            if api_key and api_secret:
+            private_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
+            if api_key and api_secret and private_key:
                 creds = ApiCreds(
                     api_key=api_key,
                     api_secret=api_secret,
                     api_passphrase=passphrase,
                 )
-                self._clob = ClobClient(host=CLOB_HOST, chain_id=CHAIN_ID, creds=creds)
+                self._clob = ClobClient(
+                    host=CLOB_HOST,
+                    chain_id=CHAIN_ID,
+                    key=private_key,
+                    creds=creds,
+                )
                 log.info("Polymarket CLOB live configurado")
             else:
+                missing = [
+                    k for k, v in [
+                        ("POLY_API_KEY", api_key),
+                        ("POLY_SECRET", api_secret),
+                        ("POLY_PRIVATE_KEY", private_key),
+                    ] if not v
+                ]
                 log.warning(
-                    "POLY_API_KEY/POLY_SECRET não configurados — "
-                    "Polymarket rodará em paper mesmo com PAPER_TRADE=false"
+                    "%s não configurado(s) — "
+                    "Polymarket rodará em paper mesmo com PAPER_TRADE=false",
+                    ", ".join(missing),
                 )
                 self.paper_trade = True
 

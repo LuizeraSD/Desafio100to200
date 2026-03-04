@@ -66,6 +66,9 @@ services:
       - key: POLY_PASSPHRASE
         scope: RUN_TIME
         type: SECRET
+      - key: POLY_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
 
       # ── Claude API (modelo de probabilidades Polymarket) ────────────────────
       - key: ANTHROPIC_API_KEY
