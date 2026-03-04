@@ -7,7 +7,7 @@
 #   3. Inicie com PAPER_TRADE=true por 48h antes de ativar live
 
 name: desafio-100-200
-region: nyc1
+region: fra1   # Frankfurt — Binance não é geo-bloqueado aqui (nyc1/US bloqueia HTTP 451)
 
 services:
   - name: bot

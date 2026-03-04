@@ -82,24 +82,50 @@ async def _init_exchange(ex: ccxt.Exchange, label: str) -> None:
     log.info("%s: sessão aiohttp configurada (ThreadedResolver)", label)
 
 
-async def _load_markets_with_retry(ex: ccxt.Exchange, label: str) -> None:
-    """Carrega mercados com backoff exponencial."""
+async def _load_markets_with_retry(ex: ccxt.Exchange, label: str) -> bool:
+    """
+    Carrega mercados com backoff exponencial.
+    Retorna True em caso de sucesso, False em caso de falha permanente.
+    Nunca lança exceção — o orquestrador decide o que fazer com a perna afetada.
+
+    Falhas permanentes (HTTP 451 geo-bloqueio, PermissionDenied) falham na 1ª tentativa
+    sem aguardar os delays — não faz sentido retentar erros de jurisdição.
+    """
     delays = [30, 60, 120, 300]
     for attempt, delay in enumerate(delays + [None], start=1):
         try:
             log.info("%s: carregando mercados (tentativa %d)...", label, attempt)
             await ex.load_markets()
             log.info("%s: %d símbolos carregados", label, len(ex.markets))
-            return
+            return True
+        except ccxt.PermissionDenied as exc:
+            # HTTP 451 (geo-bloqueio) ou chave inválida — não adianta retentar
+            log.error(
+                "%s: acesso permanentemente negado (geo-bloqueio/permissão): %s",
+                label, exc,
+            )
+            return False
         except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as exc:
+            # Verifica se é geo-bloqueio disfarçado de erro de rede (ex: Binance HTTP 451)
+            err_str = str(exc)
+            if "451" in err_str or "restricted location" in err_str.lower():
+                log.error(
+                    "%s: geo-bloqueio detectado (HTTP 451) — exchange indisponível nesta região: %s",
+                    label, exc,
+                )
+                return False
             if delay is None:
-                log.critical("%s: falha após %d tentativas: %s", label, attempt - 1, exc)
-                raise
+                log.error(
+                    "%s: falha após %d tentativas — perna será desabilitada: %s",
+                    label, attempt - 1, exc,
+                )
+                return False
             log.warning(
                 "%s: erro de conexão (tentativa %d/%d): %s — aguardando %ds...",
                 label, attempt, len(delays), exc, delay,
             )
             await asyncio.sleep(delay)
+    return False  # nunca alcançado, mas satisfaz o type checker
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -293,12 +319,15 @@ async def main():
     })
     binance_real.has["fetchCurrencies"] = False
     await _init_exchange(binance_real, "Binance")
-    await _load_markets_with_retry(binance_real, "Binance")
+    binance_ok = await _load_markets_with_retry(binance_real, "Binance")
 
     binance = PaperExchange(binance_real, label="Binance") if PAPER_TRADE else binance_real
     grid_cfg = _load_config("strategies/grid_bot/config.yaml")
     grid_bot  = GridBot(grid_cfg, binance, allocation=35.0, paper_trade=PAPER_TRADE)
     grid_bot.notify = notify.send
+    if not binance_ok:
+        grid_bot.disable()
+        log.error("Grid Bot desabilitado — Binance inacessível nesta região/rede")
 
     # ── Perna 4: Bybit Futures (Momentum Scalper) ─────────────────────────────
     bybit_key    = (os.getenv("BYBIT_API_KEY") or "").strip() or None
@@ -310,11 +339,14 @@ async def main():
         "enableRateLimit": True,
     })
     await _init_exchange(bybit_real, "Bybit")
-    await _load_markets_with_retry(bybit_real, "Bybit")
+    bybit_ok = await _load_markets_with_retry(bybit_real, "Bybit")
 
     bybit    = PaperExchange(bybit_real, label="Bybit") if PAPER_TRADE else bybit_real
     mom_cfg  = _load_config("strategies/momentum/config.yaml")
     momentum = MomentumScalper(mom_cfg, bybit, allocation=15.0, paper_trade=PAPER_TRADE)
+    if not bybit_ok:
+        momentum.disable()
+        log.error("Momentum Scalper desabilitado — Bybit inacessível nesta região/rede")
 
     # ── Perna 3: Polymarket (Claude API + CLOB) ───────────────────────────────
     poly_cfg  = _load_config("strategies/polymarket/config.yaml")
@@ -333,16 +365,32 @@ async def main():
     )
 
     prefix = "[PAPER] " if PAPER_TRADE else ""
+
+    active_legs = []
+    if grid_bot.active:
+        active_legs.append("Grid Bot")
+    if momentum.active:
+        active_legs.append("Momentum")
+    if polymarket.active:
+        active_legs.append("Polymarket")
+    active_legs.append("Forex EA (MT5)")
+
+    disabled_text = ""
+    if not binance_ok:
+        disabled_text += "\n⛔ Grid Bot desabilitado (Binance geo-bloqueada)"
+    if not bybit_ok:
+        disabled_text += "\n⛔ Momentum desabilitado (Bybit inacessível)"
+
     issues_text = (
-        "\n⚠ Problemas encontrados:\n" + "\n".join(f"• {i}" for i in cred_issues)
+        "\n⚠ Problemas de credenciais:\n" + "\n".join(f"• {i}" for i in cred_issues)
         if cred_issues else ""
     )
     await notify.send(
         f"{prefix}🚀 Orchestrator iniciado\n"
         f"Modo: {mode_label}\n"
-        "Pernas ativas: Grid Bot | Momentum Scalper | Polymarket Model\n"
-        "Forex EA: MT5 independente\n"
+        f"Pernas ativas: {' | '.join(active_legs)}\n"
         f"Comandos: /status /pnl /stop"
+        f"{disabled_text}"
         f"{issues_text}"
     )
 
