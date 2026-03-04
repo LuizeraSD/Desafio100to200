@@ -1,6 +1,7 @@
 ccxt>=4.0
 ccxt[pro]>=4.0
 py-clob-client
+httpx
 anthropic>=0.20
 python-telegram-bot>=20.0
 aiohttp

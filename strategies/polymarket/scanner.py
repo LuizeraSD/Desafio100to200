@@ -1,14 +1,17 @@
 """
 Polymarket Scanner — busca mercados ativos com edge potencial.
 
-Usa py-clob-client (API síncrona) via asyncio.run_in_executor para não bloquear
-o event loop. Retorna mercados candidatos ordenados por volume decrescente.
+Usa a Gamma Markets API (https://gamma-api.polymarket.com/markets) para buscar
+mercados já filtrados server-side (active, volume mínimo, não fechados).
+Isso reduz de ~340k mercados paginados via CLOB para ~100-500 resultados úteis.
+
+O CLOB client (py-clob-client) ainda é usado para:
+  - get_last_trade_price() → atualização de P&L das posições abertas
 
 Cache em disco:
   Os candidatos filtrados são salvos em state/polymarket_candidates.json com
   timestamp. Na reinicialização, o cache é reutilizado enquanto não expirar
-  (padrão: 4h, configurável via candidates_cache_ttl_minutes). Isso evita as
-  centenas de requisições HTTP a cada restart.
+  (padrão: 4h, configurável via candidates_cache_ttl_minutes).
 """
 import asyncio
 import json
@@ -20,6 +23,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
+
 log = logging.getLogger("polymarket.scanner")
 
 try:
@@ -27,9 +32,10 @@ try:
     _CLOB_AVAILABLE = True
 except ImportError:
     _CLOB_AVAILABLE = False
-    log.warning("py-clob-client não instalado — PolymarketScanner desabilitado")
+    log.warning("py-clob-client não instalado — get_last_price indisponível")
 
 CLOB_HOST = "https://clob.polymarket.com"
+GAMMA_API = "https://gamma-api.polymarket.com"
 _MAX_CANDIDATES = 20  # máximo de mercados passados ao modelo por ciclo
 _CACHE_FILE = Path(__file__).resolve().parent.parent.parent / "state" / "polymarket_candidates.json"
 
@@ -37,8 +43,7 @@ _CACHE_FILE = Path(__file__).resolve().parent.parent.parent / "state" / "polymar
 class PolymarketScanner:
     """
     Busca mercados ativos no Polymarket com volume > min_volume_usd.
-    Filtra por categorias configuradas e data de resolução futura.
-    Retorna lista de mercados candidatos para o ProbabilityModel.
+    Usa Gamma Markets API (filtros server-side) em vez de paginar CLOB.
 
     Cache em disco (state/polymarket_candidates.json):
       - Válido por `candidates_cache_ttl_minutes` (padrão: 240 = 4h)
@@ -52,17 +57,22 @@ class PolymarketScanner:
         self.categories: set[str] = set(c.lower() for c in config.get("categories", []))
         self._cache_ttl = int(config.get("candidates_cache_ttl_minutes", 240)) * 60
 
+        # CLOB client apenas para get_last_trade_price (P&L)
         self._client: "ClobClient | None" = None
         if _CLOB_AVAILABLE:
             self._client = ClobClient(host=CLOB_HOST)
-            log.info("PolymarketScanner pronto (host=%s, cache_ttl=%dmin)", CLOB_HOST, self._cache_ttl // 60)
+
+        log.info(
+            "PolymarketScanner pronto (Gamma API, min_vol=$%.0f, cache_ttl=%dmin)",
+            self.min_volume, self._cache_ttl // 60,
+        )
 
         # Cache em memória
         self._cached_candidates: list[dict] = []
         self._cache_timestamp: float = 0.0
-        self._disk_cache_loaded: bool = False  # flag: leitura do disco já tentada?
+        self._disk_cache_loaded: bool = False
 
-        # Sinaliza parada para _fetch_markets (roda em thread, não pode ser cancelado por asyncio)
+        # Sinaliza parada para _fetch_markets (roda em thread)
         self._stop_event = threading.Event()
 
     async def get_candidates(self) -> list[dict]:
@@ -73,10 +83,6 @@ class PolymarketScanner:
           - question, description, market_price, volume_usd, end_date,
             category, condition_id, token_yes_id, token_no_id
         """
-        if not _CLOB_AVAILABLE or self._client is None:
-            log.warning("py-clob-client indisponível — retornando lista vazia")
-            return []
-
         now = time.time()
 
         # Carrega cache do disco apenas na primeira chamada
@@ -93,8 +99,8 @@ class PolymarketScanner:
             )
             return self._cached_candidates
 
-        # Cache expirado ou ausente → busca na API
-        log.info("Scanner: cache expirado ou ausente — buscando mercados na CLOB API...")
+        # Cache expirado ou ausente → busca na Gamma API
+        log.info("Scanner: cache expirado ou ausente — buscando mercados na Gamma API...")
         loop = asyncio.get_event_loop()
         try:
             candidates = await loop.run_in_executor(None, self._fetch_markets)
@@ -105,7 +111,6 @@ class PolymarketScanner:
             return candidates
         except Exception as exc:
             log.error("Erro ao buscar mercados Polymarket: %s", exc)
-            # Em caso de falha, retorna cache expirado se disponível
             if self._cached_candidates:
                 log.warning(
                     "Scanner: retornando cache expirado como fallback (%d candidatos)",
@@ -157,104 +162,99 @@ class PolymarketScanner:
             log.warning("Scanner: erro ao salvar cache em disco: %s", exc)
 
     # ─────────────────────────────────────────────
-    # Fetch síncrono (executado em thread pool)
+    # Fetch via Gamma Markets API (executado em thread pool)
     # ─────────────────────────────────────────────
 
     def _fetch_markets(self) -> list[dict]:
-        """Paginação completa da CLOB API + filtragem.
+        """Busca mercados ativos via Gamma API com filtros server-side.
 
-        Inclui delay entre páginas (evita rate limit) e retry com backoff
-        em caso de erro transiente (a API corta conexão após muitos requests seguidos).
+        Em vez de paginar 340k+ mercados via CLOB, a Gamma API permite:
+          - active=true, closed=false  → só mercados abertos
+          - volume_num_min             → filtra volume server-side
+          - order=volume, ascending=false → já ordenado por volume
+
+        Resultado: ~2-5 requests HTTP em vez de ~340+.
         """
         all_markets: list[dict] = []
-        next_cursor: str | None = None
-        page = 0
-        _PAGE_DELAY = 0.3        # segundos entre páginas
-        _MAX_RETRIES = 3         # retries por página com erro
-        _RETRY_BASE_DELAY = 5.0  # backoff: 5s, 10s, 20s
+        offset = 0
+        limit = 100  # resultados por página
+        _MAX_PAGES = 10  # segurança: máximo 1000 mercados
+        _REQUEST_TIMEOUT = 30.0
 
-        while not self._stop_event.is_set():
-            # Delay entre páginas para evitar rate limit
-            if page > 0:
-                time.sleep(_PAGE_DELAY)
-
-            resp = None
-            for retry in range(_MAX_RETRIES):
-                if self._stop_event.is_set():
-                    break
-                try:
-                    if next_cursor:
-                        resp = self._client.get_markets(next_cursor=next_cursor)
-                    else:
-                        resp = self._client.get_markets()
-                    break  # sucesso
-                except Exception as exc:
-                    wait = _RETRY_BASE_DELAY * (2 ** retry)
-                    log.warning(
-                        "CLOB get_markets erro (página %d, tentativa %d/%d): %s — retry em %.0fs",
-                        page, retry + 1, _MAX_RETRIES, exc, wait,
-                    )
-                    if retry < _MAX_RETRIES - 1:
-                        # Espera com checagem de stop a cada segundo
-                        for _ in range(int(wait)):
-                            if self._stop_event.is_set():
-                                break
-                            time.sleep(1)
-                    else:
-                        log.error(
-                            "CLOB get_markets: falha após %d tentativas na página %d — "
-                            "retornando %d mercados coletados até agora",
-                            _MAX_RETRIES, page, len(all_markets),
-                        )
-
-            if resp is None:
-                break  # todas as retries falharam ou stop sinalizado
-
-            # Resposta pode ser lista direta ou dict paginado
-            if isinstance(resp, list):
-                all_markets.extend(resp)
+        for page in range(_MAX_PAGES):
+            if self._stop_event.is_set():
                 break
-            else:
-                data = resp.get("data", [])
-                all_markets.extend(data)
-                next_cursor = resp.get("next_cursor")
-                if not next_cursor or next_cursor in ("LTE=", ""):
-                    break
 
-            page += 1
-            if page % 50 == 0:
-                log.info("Scanner: %d páginas processadas (%d mercados)...", page, len(all_markets))
+            params = {
+                "active": "true",
+                "closed": "false",
+                "archived": "false",
+                "limit": str(limit),
+                "offset": str(offset),
+                "order": "volume",
+                "ascending": "false",
+            }
+            # Filtra volume server-side quando possível
+            if self.min_volume > 0:
+                params["volume_num_min"] = str(int(self.min_volume))
+
+            try:
+                resp = httpx.get(
+                    f"{GAMMA_API}/markets",
+                    params=params,
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as exc:
+                log.error("Gamma API erro (página %d): %s", page, exc)
+                break
+
+            if not data or not isinstance(data, list):
+                break
+
+            all_markets.extend(data)
+            log.info(
+                "Scanner: página %d — %d mercados recebidos (total: %d)",
+                page, len(data), len(all_markets),
+            )
+
+            # Menos resultados que o limit → última página
+            if len(data) < limit:
+                break
+
+            offset += limit
+
+            # Delay entre páginas
+            if not self._stop_event.is_set():
+                time.sleep(0.3)
 
         return self._filter_and_format(all_markets)
 
     def _filter_and_format(self, raw_markets: list[dict]) -> list[dict]:
-        """Aplica filtros de estado/data/preço e normaliza campos.
+        """Filtragem local complementar (preço, data, tokens).
 
-        Nota sobre volume: o endpoint /markets do CLOB API não retorna dados de
-        volume por mercado. O filtro min_volume_usd só é aplicado quando o campo
-        está presente na resposta; do contrário, o mercado é aceito.
+        A maioria dos filtros pesados (active, volume) já foi aplicada
+        server-side pela Gamma API. Aqui só validamos campos obrigatórios
+        e formatamos para o modelo.
 
-        Nota sobre categoria: a CLOB API retorna o campo `category` diretamente
-        (string) além de `tags`. Se nenhum bater com a lista configurada, o
-        mercado ainda é aceito (categorias servem apenas como preferência).
+        Schema da Gamma API (campos relevantes):
+          - conditionId: str (hex)
+          - question, description: str
+          - outcomePrices: JSON string '["0.493", "0.507"]' → [YES_price, NO_price]
+          - clobTokenIds: JSON string '["token_yes_id", "token_no_id"]'
+          - outcomes: JSON string '["Yes", "No"]'
+          - volumeNum: float, endDateIso: str, endDate: str (ISO 8601)
         """
         now = datetime.now(timezone.utc)
         candidates: list[dict] = []
 
         for m in raw_markets:
             try:
-                # ── Ativo e não fechado (campos presentes no objeto de mercado) ─
-                if m.get("active") is False or m.get("closed") is True:
-                    continue
+                # ── Volume ───────────────────────────────────────────────
+                volume = float(m.get("volumeNum") or m.get("volume") or 0)
 
-                # ── Volume (opcional: CLOB API frequentemente não retorna) ─────
-                volume = float(
-                    m.get("volume") or m.get("volumeNum") or m.get("volume24hr") or 0
-                )
-                if self.min_volume > 0 and volume > 0 and volume < self.min_volume:
-                    continue  # Filtra só quando o campo existe e está abaixo do mínimo
-
-                # ── Categoria (melhor esforço: `category` direto ou via tags) ──
+                # ── Categoria ────────────────────────────────────────────
                 category = str(m.get("category") or "").lower()
                 if not category:
                     tags = m.get("tags") or []
@@ -264,43 +264,54 @@ class PolymarketScanner:
                             first.get("label", "") if isinstance(first, dict) else str(first)
                         ).lower()
 
-                # Filtra por categoria apenas se a API retornou uma e não bate
                 if self.categories and category and category not in self.categories:
                     continue
 
-                # ── Data de resolução ────────────────────────────────────────
-                end_date_str = (
-                    m.get("end_date_iso")
-                    or m.get("endDateIso")
-                    or m.get("end_date")
-                    or ""
-                )
+                # ── Data de resolução ────────────────────────────────────
+                end_date_str = m.get("endDate") or m.get("endDateIso") or ""
                 if end_date_str:
                     try:
                         end_dt = datetime.fromisoformat(
                             end_date_str.replace("Z", "+00:00")
                         )
                         if end_dt <= now:
-                            continue  # Mercado já encerrado
+                            continue
                     except ValueError:
                         pass
 
-                # ── Tokens YES / NO ──────────────────────────────────────────
-                tokens: list[dict] = m.get("tokens") or []
-                token_yes = next(
-                    (t for t in tokens if str(t.get("outcome", "")).upper() == "YES"),
-                    None,
-                )
-                token_no = next(
-                    (t for t in tokens if str(t.get("outcome", "")).upper() == "NO"),
-                    None,
-                )
-                if not token_yes:
+                # ── Preços YES/NO (Gamma: outcomePrices como JSON string) ─
+                prices_raw = m.get("outcomePrices") or "[]"
+                if isinstance(prices_raw, str):
+                    prices = json.loads(prices_raw)
+                else:
+                    prices = prices_raw
+                if not prices or len(prices) < 2:
                     continue
 
-                market_price = float(token_yes.get("price", 0) or 0)
+                market_price = float(prices[0])  # YES price
                 if not (0.02 <= market_price <= 0.98):
-                    continue  # Já resolvido ou sem preço significativo
+                    continue
+
+                # ── Token IDs (Gamma: clobTokenIds como JSON string) ─────
+                tokens_raw = m.get("clobTokenIds") or "[]"
+                if isinstance(tokens_raw, str):
+                    token_ids = json.loads(tokens_raw)
+                else:
+                    token_ids = tokens_raw
+                if not token_ids or len(token_ids) < 2:
+                    continue
+
+                token_yes_id = token_ids[0]
+                token_no_id = token_ids[1]
+
+                # ── Condition ID ─────────────────────────────────────────
+                condition_id = m.get("conditionId") or m.get("condition_id") or ""
+                if not condition_id:
+                    continue
+
+                # ── Aceitando ordens? ────────────────────────────────────
+                if m.get("enableOrderBook") is False or m.get("acceptingOrders") is False:
+                    continue
 
                 candidates.append({
                     "question":     m.get("question", ""),
@@ -309,9 +320,9 @@ class PolymarketScanner:
                     "volume_usd":   volume,
                     "end_date":     end_date_str,
                     "category":     category,
-                    "condition_id": m.get("condition_id", ""),
-                    "token_yes_id": token_yes.get("token_id", ""),
-                    "token_no_id":  token_no.get("token_id", "") if token_no else "",
+                    "condition_id": condition_id,
+                    "token_yes_id": token_yes_id,
+                    "token_no_id":  token_no_id,
                 })
 
             except Exception as exc:
@@ -319,18 +330,18 @@ class PolymarketScanner:
 
         candidates.sort(key=lambda x: x["volume_usd"], reverse=True)
         log.info(
-            "Scanner: %d/%d mercados passaram nos filtros (volume/categoria/data/preço)",
+            "Scanner: %d/%d mercados passaram nos filtros",
             len(candidates), len(raw_markets),
         )
         return candidates[:_MAX_CANDIDATES]
 
     def stop(self) -> None:
-        """Sinaliza parada para _fetch_markets (encerra loop de paginação na próxima iteração)."""
+        """Sinaliza parada para _fetch_markets."""
         self._stop_event.set()
         log.info("Scanner: parada sinalizada")
 
     def get_last_price_sync(self, token_id: str) -> float | None:
-        """Preço atual de um token (síncrono, usar via run_in_executor)."""
+        """Preço atual de um token via CLOB (síncrono, usar via run_in_executor)."""
         if not self._client or not token_id:
             return None
         try:

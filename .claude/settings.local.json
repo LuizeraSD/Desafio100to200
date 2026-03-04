@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:docs.digitalocean.com)"
+      "WebFetch(domain:docs.digitalocean.com)",
+      "WebFetch(domain:docs.polymarket.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(python -c \":*)",
+      "Bash(./venv/Scripts/python -c \":*)"
     ]
   }
 }
