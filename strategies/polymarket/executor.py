@@ -238,12 +238,11 @@ class PolymarketModel(BaseStrategy):
             try:
                 # py-clob-client API: create_and_post_order aceita OrderArgs
                 from py_clob_client.clob_types import OrderArgs
-                from py_clob_client.constants import BUY
                 order_args = OrderArgs(
                     token_id=token_id,
                     price=round(entry_price, 4),
                     size=shares,
-                    side=BUY,
+                    side="BUY",
                 )
                 resp = await loop.run_in_executor(
                     None,
