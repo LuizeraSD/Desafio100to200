@@ -33,7 +33,15 @@ class BaseStrategy(ABC):
 
     @abstractmethod
     async def close_all(self) -> None:
-        """Cancela todas as ordens abertas e fecha todas as posições."""
+        """Cancela todas as ordens abertas e fecha todas as posições.
+        Usado por circuit breakers e emergência. Limpa o estado salvo."""
+
+    async def shutdown(self) -> None:
+        """Encerramento gracioso: salva estado SEM fechar posições.
+        Chamado no restart normal (Ctrl+C, SIGTERM).
+        Posições permanecem abertas e serão recuperadas no próximo boot.
+        Subclasses devem sobrescrever para persistir seu estado."""
+        pass  # default: noop — estratégias sem estado não precisam fazer nada
 
     @abstractmethod
     async def resize(self, new_allocation: float) -> None:

@@ -149,6 +149,15 @@ class GridBot(BaseStrategy):
         # Remove estado salvo: encerramento limpo → próximo restart inicia do zero
         clear_state(self.id)
 
+    async def shutdown(self) -> None:
+        """Encerramento gracioso: salva estado do grid sem fechar posições.
+        Ordens na exchange permanecem ativas; serão reconciliadas no próximo boot."""
+        self._save_state()
+        log.info(
+            "Grid Bot: shutdown gracioso — %d buy + %d sell ordens salvas para recovery",
+            len(self.buy_orders), len(self.sell_orders),
+        )
+
     async def resize(self, new_allocation: float) -> None:
         log.info("Resize: %.2f → %.2f", self.allocation, new_allocation)
         self.allocation = new_allocation

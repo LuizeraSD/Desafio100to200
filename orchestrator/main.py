@@ -379,6 +379,7 @@ async def main():
     portfolio  = Portfolio(initial=100.0)
     risk       = RiskManager(max_drawdown=0.40, daily_target=0.15)
     stop_event = asyncio.Event()  # sinaliza parada de emergência (Telegram /stop)
+    emergency_stop = False  # True = fechar tudo; False = shutdown gracioso
 
     mode_label = "PAPER TRADING" if PAPER_TRADE else "LIVE"
     log.info("Modo: %s", mode_label)
@@ -524,6 +525,7 @@ async def main():
                     f"{prefix}🚨 DRAWDOWN GLOBAL 50% — parando tudo!\n"
                     f"Portfólio: ${portfolio.total_value:.2f}"
                 )
+                emergency_stop = True
                 stop_event.set()
                 break
 
@@ -546,18 +548,41 @@ async def main():
             await asyncio.sleep(TICK_INTERVAL)
 
     except KeyboardInterrupt:
-        log.info("Interrompido pelo usuário")
+        log.info("Interrompido pelo usuário (Ctrl+C) — shutdown gracioso")
     finally:
-        log.info("Fechando todas as posições...")
-        close_tasks = [s.close_all() for s in strategies]
-        await asyncio.gather(*close_tasks, return_exceptions=True)
+        # Verificar se /stop foi acionado (parada de emergência via Telegram)
+        if stop_event.is_set():
+            emergency_stop = True
+
+        if emergency_stop:
+            # EMERGÊNCIA: fecha todas as posições e limpa estado
+            log.info("🛑 Parada de emergência — fechando todas as posições...")
+            close_tasks = [s.close_all() for s in strategies if s.active]
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+            await notify.send(
+                f"{prefix}🛑 Orchestrator PARADO (emergência)\n"
+                "Todas as posições foram fechadas e estado limpo."
+            )
+        else:
+            # GRACIOSO: salva estado SEM fechar posições
+            log.info("🔄 Shutdown gracioso — salvando estado (posições permanecem abertas)...")
+            shutdown_tasks = [s.shutdown() for s in strategies]
+            await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+            await notify.send(
+                f"{prefix}🔄 Orchestrator encerrado (shutdown gracioso)\n"
+                "Posições permanecem abertas — serão recuperadas no próximo boot."
+            )
+
+        # Persiste snapshot final do portfólio
+        portfolio.record_snapshot()
+        save_state("portfolio", portfolio.to_state_dict(PAPER_TRADE))
 
         await notify.stop_commands()
         tg_task.cancel()
 
         await binance_real.close()
         await bybit_real.close()
-        log.info("Orchestrator encerrado")
+        log.info("Orchestrator encerrado (estado salvo, posições intactas)")
 
 
 if __name__ == "__main__":

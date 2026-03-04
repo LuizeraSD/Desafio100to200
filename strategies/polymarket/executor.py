@@ -163,7 +163,8 @@ class PolymarketModel(BaseStrategy):
         )
 
     async def close_all(self) -> None:
-        """Fecha (ou marca como fechadas) todas as posições abertas e limpa estado."""
+        """Fecha (ou marca como fechadas) todas as posições abertas e limpa estado.
+        Usado por circuit breakers — fecha tudo e limpa estado."""
         # Sinaliza parada para o loop de paginação da CLOB API (roda em thread)
         self.scanner.stop()
 
@@ -175,7 +176,18 @@ class PolymarketModel(BaseStrategy):
             else:
                 await self._close_paper_position(pos, reason="close_all")
         clear_state(self.id)
-        log.info("Polymarket: todas as posições fechadas")
+        log.info("Polymarket: todas as posições fechadas e estado limpo")
+
+    async def shutdown(self) -> None:
+        """Encerramento gracioso: salva estado sem fechar posições.
+        Posições permanecem abertas e serão recuperadas no próximo boot."""
+        self.scanner.stop()
+        self._save_state()
+        open_count = sum(1 for p in self._positions.values() if not p.closed)
+        log.info(
+            "Polymarket: shutdown gracioso — %d posição(ões) salvas para recovery",
+            open_count,
+        )
 
     async def resize(self, new_allocation: float) -> None:
         self.allocation = new_allocation

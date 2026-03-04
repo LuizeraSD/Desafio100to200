@@ -123,7 +123,8 @@ class MomentumScalper(BaseStrategy):
         )
 
     async def close_all(self) -> None:
-        """Fecha todos os trades abertos e limpa estado persistido."""
+        """Fecha todos os trades abertos e limpa estado persistido.
+        Usado por circuit breakers — fecha tudo e limpa estado."""
         tasks = [
             self._close_trade(t, "close_all")
             for t in self._trades.values()
@@ -132,7 +133,17 @@ class MomentumScalper(BaseStrategy):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         clear_state(self.id)
-        log.info("Momentum: todas as posições fechadas")
+        log.info("Momentum: todas as posições fechadas e estado limpo")
+
+    async def shutdown(self) -> None:
+        """Encerramento gracioso: salva estado sem fechar posições.
+        Trades permanecem abertos e serão reconciliados no próximo boot."""
+        self._save_state()
+        open_count = sum(1 for t in self._trades.values() if not t.closed)
+        log.info(
+            "Momentum: shutdown gracioso — %d trade(s) salvos para recovery",
+            open_count,
+        )
 
     async def resize(self, new_allocation: float) -> None:
         self.allocation = new_allocation
