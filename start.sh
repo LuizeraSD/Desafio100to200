@@ -12,7 +12,7 @@ LOG_DIR=/app/logs
 mkdir -p "$LOG_DIR"
 
 echo "[start.sh] Iniciando orchestrator em background..."
-python orchestrator/main.py >> "$LOG_DIR/orchestrator.log" 2>&1 &
+python -u orchestrator/main.py 2>&1 | tee "$LOG_DIR/orchestrator.log" &
 ORCH_PID=$!
 echo "[start.sh] Orchestrator PID=$ORCH_PID"
 
