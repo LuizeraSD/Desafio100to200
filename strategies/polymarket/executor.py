@@ -88,19 +88,28 @@ class PolymarketModel(BaseStrategy):
             api_secret = os.getenv("POLY_SECRET", "").strip()
             passphrase = os.getenv("POLY_PASSPHRASE", "").strip()
             private_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
+            funder     = os.getenv("POLY_FUNDER", "").strip()
+            # signature_type: 0=EOA (MetaMask direto), 1=Poly proxy (Magic/email), 2=Poly proxy (browser)
+            sig_type   = int(os.getenv("POLY_SIGNATURE_TYPE", "0").strip())
             if api_key and api_secret and private_key:
                 creds = ApiCreds(
                     api_key=api_key,
                     api_secret=api_secret,
                     api_passphrase=passphrase,
                 )
-                self._clob = ClobClient(
-                    host=CLOB_HOST,
-                    chain_id=CHAIN_ID,
-                    key=private_key,
-                    creds=creds,
-                )
-                log.info("Polymarket CLOB live configurado")
+                clob_kwargs = {
+                    "host": CLOB_HOST,
+                    "chain_id": CHAIN_ID,
+                    "key": private_key,
+                    "creds": creds,
+                }
+                if sig_type > 0:
+                    clob_kwargs["signature_type"] = sig_type
+                if funder:
+                    clob_kwargs["funder"] = funder
+                self._clob = ClobClient(**clob_kwargs)
+                proxy_info = f" (proxy: sig_type={sig_type}, funder={funder[:10]}...)" if funder else ""
+                log.info("Polymarket CLOB live configurado%s", proxy_info)
             else:
                 missing = [
                     k for k, v in [
