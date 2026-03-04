@@ -286,6 +286,85 @@ async def _validate_credentials(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Verificação de saldo mínimo (executado uma vez na inicialização)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _check_balances(
+    binance_ex: ccxt.Exchange,
+    bybit_ex: ccxt.Exchange,
+    paper_trade: bool,
+    binance_ok: bool,
+    bybit_ok: bool,
+    grid_alloc: float,
+    momentum_alloc: float,
+) -> list[str]:
+    """
+    Verifica saldo USDT livre nas exchanges e compara com a alocação configurada.
+
+    Apenas em live mode — em paper mode o saldo real não importa.
+    Só verifica exchanges que conseguiram carregar mercados (binance_ok/bybit_ok).
+
+    Níveis de alerta:
+      ✅  saldo >= alocação                    → operação normal
+      ⚠   0 < saldo < alocação                → posições serão proporcionalmente menores
+      ❌  saldo = $0 (conta vazia ou errada)   → exchange não conseguirá abrir posições
+
+    Nunca aborta a inicialização — retorna lista para notificar o operador.
+    Nota: Polymarket (USDC on-chain) não é verificado aqui — requer chave privada
+    Polygon, não suportada pelo CLOB API key.
+    """
+    if paper_trade:
+        log.info("Saldo: paper mode — verificação ignorada")
+        return []
+
+    log.info("── Verificação de saldo ──")
+    issues: list[str] = []
+
+    checks = [
+        (binance_ex, "Binance", grid_alloc,      "BINANCE_API_KEY", binance_ok),
+        (bybit_ex,   "Bybit",   momentum_alloc,  "BYBIT_API_KEY",   bybit_ok),
+    ]
+
+    for ex, label, alloc, env_key, ex_ok in checks:
+        if not ex_ok:
+            log.info("%s: exchange inacessível — saldo não verificado", label)
+            continue
+        if not os.getenv(env_key, "").strip():
+            continue  # key ausente — já reportado em _validate_credentials
+
+        try:
+            bal = await ex.fetch_balance(params={"type": "future"})
+            usdt_free = float(bal.get("USDT", {}).get("free") or 0)
+
+            if usdt_free >= alloc:
+                log.info(
+                    "✅ %s Futures: $%.2f USDT livre (alocação: $%.2f)",
+                    label, usdt_free, alloc,
+                )
+            elif usdt_free > 0:
+                msg = (
+                    f"{label} Futures: saldo ${usdt_free:.2f} < alocação ${alloc:.2f}"
+                    " — posições serão proporcionalmente menores"
+                )
+                log.warning("⚠ %s", msg)
+                issues.append(msg)
+            else:
+                msg = f"{label} Futures: saldo USDT $0.00 — não conseguirá abrir posições"
+                log.error("❌ %s", msg)
+                issues.append(msg)
+
+        except ccxt.AuthenticationError:
+            pass  # já reportado em _validate_credentials
+        except Exception as exc:
+            log.warning(
+                "⚠ %s: erro ao verificar saldo: %s — %s", label, type(exc).__name__, exc
+            )
+
+    log.info("── Fim da verificação de saldo (%d problema(s)) ──", len(issues))
+    return issues
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -352,8 +431,13 @@ async def main():
     poly_cfg  = _load_config("strategies/polymarket/config.yaml")
     polymarket = PolymarketModel(poly_cfg, allocation=25.0, paper_trade=PAPER_TRADE)
 
-    # ── Validação de credenciais ──────────────────────────────────────────────
+    # ── Validação de credenciais + saldo mínimo ───────────────────────────────
     cred_issues = await _validate_credentials(binance_real, bybit_real, PAPER_TRADE)
+    balance_issues = await _check_balances(
+        binance_real, bybit_real, PAPER_TRADE,
+        binance_ok, bybit_ok,
+        grid_bot.allocation, momentum.allocation,
+    )
 
     # ── Estratégias ativas ────────────────────────────────────────────────────
     # Perna 2 (Forex EA) roda direto no MetaTrader 5 — sem instância Python.
@@ -381,9 +465,10 @@ async def main():
     if not bybit_ok:
         disabled_text += "\n⛔ Momentum desabilitado (Bybit inacessível)"
 
+    all_issues = cred_issues + balance_issues
     issues_text = (
-        "\n⚠ Problemas de credenciais:\n" + "\n".join(f"• {i}" for i in cred_issues)
-        if cred_issues else ""
+        "\n⚠ Problemas detectados:\n" + "\n".join(f"• {i}" for i in all_issues)
+        if all_issues else ""
     )
     await notify.send(
         f"{prefix}🚀 Orchestrator iniciado\n"
