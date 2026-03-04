@@ -3,10 +3,13 @@ Orchestrator principal — loop central do Desafio $100→$200.
 Coordena as 4 estratégias, aplica circuit breakers e rebalanceia diariamente.
 
 Estratégias:
-  Perna 1: Grid Bot (Binance Futures) — $35 — ✅ implementado
+  Perna 1: Grid Bot (Bybit Futures) — $30 — ✅ implementado
   Perna 2: Forex Breakout (IC Markets MT5 EA) — $25 — ✅ implementado (MQL5)
   Perna 3: Polymarket Model (Claude API) — $25 — ✅ implementado
-  Perna 4: Momentum Scalper (Bybit Futures) — $15 — ✅ implementado
+  Perna 4: Momentum Scalper (Bybit Futures) — $20 — ✅ implementado
+
+Nota: Grid Bot migrado de Binance → Bybit (Binance Futures geo-bloqueada no Brasil).
+      Grid + Momentum compartilham a mesma instância ccxt.bybit.
 
 Variável de ambiente:
   PAPER_TRADE=true  → usa PaperExchange (simula ordens, preços reais da exchange)
@@ -145,7 +148,7 @@ async def _run_network_diag() -> None:
 
     # DNS síncrono (pilha OS)
     try:
-        addrs = socket.getaddrinfo("api.binance.com", 443, proto=socket.IPPROTO_TCP)
+        addrs = socket.getaddrinfo("api.bybit.com", 443, proto=socket.IPPROTO_TCP)
         log.info("socket.getaddrinfo OK → %s", [a[4][0] for a in addrs])
     except OSError as exc:
         log.error("socket.getaddrinfo FALHOU: %s", exc)
@@ -154,7 +157,7 @@ async def _run_network_diag() -> None:
     try:
         loop = asyncio.get_event_loop()
         addrs_async = await loop.getaddrinfo(
-            "api.binance.com", 443, proto=socket.IPPROTO_TCP
+            "api.bybit.com", 443, proto=socket.IPPROTO_TCP
         )
         log.info("loop.getaddrinfo OK → %s", [a[4][0] for a in addrs_async])
     except OSError as exc:
@@ -164,7 +167,7 @@ async def _run_network_diag() -> None:
     try:
         async with aiohttp.ClientSession(connector=_make_connector()) as s:
             async with s.get(
-                "https://api.binance.com/api/v3/ping",
+                "https://api.bybit.com/v5/market/time",
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 log.info("aiohttp ThreadedResolver ping OK → HTTP %d", r.status)
@@ -179,7 +182,6 @@ async def _run_network_diag() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _validate_credentials(
-    binance_ex: ccxt.Exchange,
     bybit_ex: ccxt.Exchange,
     paper_trade: bool,
 ) -> None:
@@ -193,7 +195,7 @@ async def _validate_credentials(
 
     Nunca aborta a inicialização — informa e deixa o operador decidir.
     Em paper trading só valida variáveis obrigatórias (ANTHROPIC_API_KEY).
-    Em live trading testa autenticação real em Binance e Bybit.
+    Em live trading testa autenticação real na Bybit.
     """
     log.info("── Validação de credenciais ──")
     issues: list[str] = []  # coleta erros para notificar via Telegram depois
@@ -223,12 +225,10 @@ async def _validate_credentials(
     else:
         log.info("ℹ Telegram não configurado — monitoramento apenas via logs")
 
-    # ── Keys de exchange (apenas presença; auth real só em live) ─────────────
+    # ── Keys de exchange (Bybit para Grid Bot + Momentum) ────────────────────
     exchange_keys = {
-        "BINANCE_API_KEY": "Grid Bot (Binance)",
-        "BINANCE_SECRET":  "Grid Bot (Binance)",
-        "BYBIT_API_KEY":   "Momentum Scalper (Bybit)",
-        "BYBIT_SECRET":    "Momentum Scalper (Bybit)",
+        "BYBIT_API_KEY":   "Grid Bot + Momentum (Bybit)",
+        "BYBIT_SECRET":    "Grid Bot + Momentum (Bybit)",
     }
     poly_keys = {
         "POLY_API_KEY":    "Polymarket CLOB",
@@ -252,23 +252,6 @@ async def _validate_credentials(
                 issues.append(msg)
             else:
                 log.info("✅ %s presente", key)
-
-        # ── Teste de autenticação real: Binance Futures ───────────────────────
-        binance_key = os.getenv("BINANCE_API_KEY", "").strip()
-        if binance_key:
-            try:
-                await binance_ex.fetch_balance(params={"type": "future"})
-                log.info("✅ Binance Futures auth OK (balance acessível)")
-            except ccxt.AuthenticationError as exc:
-                msg = f"Binance auth FALHOU: key inválida ou sem permissão Futures ({exc})"
-                log.error("❌ %s", msg)
-                issues.append(msg)
-            except ccxt.ExchangeError as exc:
-                msg = f"Binance auth FALHOU: {exc}"
-                log.error("❌ %s", msg)
-                issues.append(msg)
-            except Exception as exc:
-                log.warning("⚠ Binance auth: erro inesperado (%s): %s", type(exc).__name__, exc)
 
         # ── Teste de autenticação real: Bybit Futures ─────────────────────────
         bybit_key = os.getenv("BYBIT_API_KEY", "").strip()
@@ -296,22 +279,20 @@ async def _validate_credentials(
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _check_balances(
-    binance_ex: ccxt.Exchange,
     bybit_ex: ccxt.Exchange,
     paper_trade: bool,
-    binance_ok: bool,
     bybit_ok: bool,
     grid_alloc: float,
     momentum_alloc: float,
 ) -> list[str]:
     """
-    Verifica saldo USDT livre nas exchanges e compara com a alocação configurada.
+    Verifica saldo USDT livre na Bybit e compara com a alocação total (Grid + Momentum).
 
     Apenas em live mode — em paper mode o saldo real não importa.
-    Só verifica exchanges que conseguiram carregar mercados (binance_ok/bybit_ok).
+    Só verifica se a exchange conseguiu carregar mercados (bybit_ok).
 
     Níveis de alerta:
-      ✅  saldo >= alocação                    → operação normal
+      ✅  saldo >= alocação total              → operação normal
       ⚠   0 < saldo < alocação                → posições serão proporcionalmente menores
       ❌  saldo = $0 (conta vazia ou errada)   → exchange não conseguirá abrir posições
 
@@ -326,36 +307,32 @@ async def _check_balances(
     log.info("── Verificação de saldo ──")
     issues: list[str] = []
 
-    checks = [
-        (binance_ex, "Binance", grid_alloc,      "BINANCE_API_KEY", binance_ok),
-        (bybit_ex,   "Bybit",   momentum_alloc,  "BYBIT_API_KEY",   bybit_ok),
-    ]
+    total_bybit_alloc = grid_alloc + momentum_alloc
 
-    for ex, label, alloc, env_key, ex_ok in checks:
-        if not ex_ok:
-            log.info("%s: exchange inacessível — saldo não verificado", label)
-            continue
-        if not os.getenv(env_key, "").strip():
-            continue  # key ausente — já reportado em _validate_credentials
-
+    if not bybit_ok:
+        log.info("Bybit: exchange inacessível — saldo não verificado")
+    elif not os.getenv("BYBIT_API_KEY", "").strip():
+        pass  # key ausente — já reportado em _validate_credentials
+    else:
         try:
-            bal = await ex.fetch_balance(params={"type": "future"})
+            bal = await bybit_ex.fetch_balance(params={"type": "future"})
             usdt_free = float(bal.get("USDT", {}).get("free") or 0)
 
-            if usdt_free >= alloc:
+            if usdt_free >= total_bybit_alloc:
                 log.info(
-                    "✅ %s Futures: $%.2f USDT livre (alocação: $%.2f)",
-                    label, usdt_free, alloc,
+                    "✅ Bybit Futures: $%.2f USDT livre (alocação total: $%.2f — Grid $%.2f + Momentum $%.2f)",
+                    usdt_free, total_bybit_alloc, grid_alloc, momentum_alloc,
                 )
             elif usdt_free > 0:
                 msg = (
-                    f"{label} Futures: saldo ${usdt_free:.2f} < alocação ${alloc:.2f}"
+                    f"Bybit Futures: saldo ${usdt_free:.2f} < alocação total ${total_bybit_alloc:.2f}"
+                    f" (Grid ${grid_alloc:.2f} + Momentum ${momentum_alloc:.2f})"
                     " — posições serão proporcionalmente menores"
                 )
                 log.warning("⚠ %s", msg)
                 issues.append(msg)
             else:
-                msg = f"{label} Futures: saldo USDT $0.00 — não conseguirá abrir posições"
+                msg = f"Bybit Futures: saldo USDT $0.00 — não conseguirá abrir posições"
                 log.error("❌ %s", msg)
                 issues.append(msg)
 
@@ -363,7 +340,7 @@ async def _check_balances(
             pass  # já reportado em _validate_credentials
         except Exception as exc:
             log.warning(
-                "⚠ %s: erro ao verificar saldo: %s — %s", label, type(exc).__name__, exc
+                "⚠ Bybit: erro ao verificar saldo: %s — %s", type(exc).__name__, exc
             )
 
     log.info("── Fim da verificação de saldo (%d problema(s)) ──", len(issues))
@@ -394,28 +371,9 @@ async def main():
 
     await _run_network_diag()
 
-    # ── Perna 1: Binance Futures (Grid Bot) ───────────────────────────────────
-    api_key    = (os.getenv("BINANCE_API_KEY") or "").strip() or None
-    api_secret = (os.getenv("BINANCE_SECRET")  or "").strip() or None
-    binance_real = ccxt.binance({
-        "apiKey":          api_key,
-        "secret":          api_secret,
-        "options":         {"defaultType": "future"},
-        "enableRateLimit": True,
-    })
-    binance_real.has["fetchCurrencies"] = False
-    await _init_exchange(binance_real, "Binance")
-    binance_ok = await _load_markets_with_retry(binance_real, "Binance")
-
-    binance = PaperExchange(binance_real, label="Binance") if PAPER_TRADE else binance_real
-    grid_cfg = _load_config("strategies/grid_bot/config.yaml")
-    grid_bot  = GridBot(grid_cfg, binance, allocation=35.0, paper_trade=PAPER_TRADE)
-    grid_bot.notify = notify.send
-    if not binance_ok:
-        grid_bot.disable()
-        log.error("Grid Bot desabilitado — Binance inacessível nesta região/rede")
-
-    # ── Perna 4: Bybit Futures (Momentum Scalper) ─────────────────────────────
+    # ── Bybit Futures (Grid Bot + Momentum Scalper) ───────────────────────────
+    # Ambas as pernas crypto compartilham a mesma instância ccxt.bybit.
+    # Grid Bot migrado de Binance → Bybit (Binance Futures geo-bloqueada no Brasil).
     bybit_key    = (os.getenv("BYBIT_API_KEY") or "").strip() or None
     bybit_secret = (os.getenv("BYBIT_SECRET")  or "").strip() or None
     bybit_real = ccxt.bybit({
@@ -427,9 +385,19 @@ async def main():
     await _init_exchange(bybit_real, "Bybit")
     bybit_ok = await _load_markets_with_retry(bybit_real, "Bybit")
 
-    bybit    = PaperExchange(bybit_real, label="Bybit") if PAPER_TRADE else bybit_real
+    bybit = PaperExchange(bybit_real, label="Bybit") if PAPER_TRADE else bybit_real
+
+    # ── Perna 1: Grid Bot (Bybit Futures) ─────────────────────────────────────
+    grid_cfg = _load_config("strategies/grid_bot/config.yaml")
+    grid_bot  = GridBot(grid_cfg, bybit, allocation=30.0, paper_trade=PAPER_TRADE)
+    grid_bot.notify = notify.send
+    if not bybit_ok:
+        grid_bot.disable()
+        log.error("Grid Bot desabilitado — Bybit inacessível nesta região/rede")
+
+    # ── Perna 4: Momentum Scalper (Bybit Futures) ─────────────────────────────
     mom_cfg  = _load_config("strategies/momentum/config.yaml")
-    momentum = MomentumScalper(mom_cfg, bybit, allocation=15.0, paper_trade=PAPER_TRADE)
+    momentum = MomentumScalper(mom_cfg, bybit, allocation=20.0, paper_trade=PAPER_TRADE)
     if not bybit_ok:
         momentum.disable()
         log.error("Momentum Scalper desabilitado — Bybit inacessível nesta região/rede")
@@ -439,10 +407,10 @@ async def main():
     polymarket = PolymarketModel(poly_cfg, allocation=25.0, paper_trade=PAPER_TRADE)
 
     # ── Validação de credenciais + saldo mínimo ───────────────────────────────
-    cred_issues = await _validate_credentials(binance_real, bybit_real, PAPER_TRADE)
+    cred_issues = await _validate_credentials(bybit_real, PAPER_TRADE)
     balance_issues = await _check_balances(
-        binance_real, bybit_real, PAPER_TRADE,
-        binance_ok, bybit_ok,
+        bybit_real, PAPER_TRADE,
+        bybit_ok,
         grid_bot.allocation, momentum.allocation,
     )
 
@@ -467,10 +435,8 @@ async def main():
     active_legs.append("Forex EA (MT5)")
 
     disabled_text = ""
-    if not binance_ok:
-        disabled_text += "\n⛔ Grid Bot desabilitado (Binance geo-bloqueada)"
     if not bybit_ok:
-        disabled_text += "\n⛔ Momentum desabilitado (Bybit inacessível)"
+        disabled_text += "\n⛔ Grid Bot + Momentum desabilitados (Bybit inacessível)"
 
     all_issues = cred_issues + balance_issues
     issues_text = (
@@ -580,7 +546,6 @@ async def main():
         await notify.stop_commands()
         tg_task.cancel()
 
-        await binance_real.close()
         await bybit_real.close()
         log.info("Orchestrator encerrado (estado salvo, posições intactas)")
 

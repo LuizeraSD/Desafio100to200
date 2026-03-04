@@ -1,5 +1,7 @@
-# Grid Bot — Perna 1 (Binance Futures)
-symbol: SOL/USDT         # Par perpétuo
+# Grid Bot — Perna 1 (Bybit Futures)
+# Migrado de Binance → Bybit (Binance Futures geo-bloqueada no Brasil)
+exchange: bybit
+symbol: SOL/USDT:USDT    # Par perpétuo (formato ccxt Bybit linear)
 leverage: 3              # Alavancagem (margem isolada)
 margin_mode: isolated
 

@@ -1,10 +1,11 @@
 # Momentum Scalper — Perna 4 (Bybit Futures)
 exchange: bybit
 top_n_symbols: 30            # Top N altcoins por volume 24h para monitorar
-volume_multiplier: 3.0       # Volume deve ser X vezes acima da média
+volume_multiplier: 2.0       # Volume deve ser X vezes acima da média (2x — mais sinais)
 leverage: 5                  # Alavancagem (margem isolada)
 max_open_trades: 3           # Máximo de trades simultâneos
 trailing_stop_pct: 1.5       # Trailing stop (%)
 fixed_tp_pct: 3.0            # Take profit fixo alternativo (%)
 sl_pct: 1.5                  # Stop loss fixo (%)
 circuit_breaker_pct: 40      # Desliga se perder 40% da alocação
+scan_interval_seconds: 60    # Intervalo entre scans de volume (segundos)

@@ -10,10 +10,13 @@ Bot de trading automatizado com 4 estratégias descorrelacionadas, orquestradas 
 
 | Perna | Capital | Exchange | Estratégia |
 |-------|---------|----------|------------|
-| 1 | $35 | Binance Futures | Grid Bot (SOL/USDT, 20 grids, 3x leverage, ATR dinâmico) |
+| 1 | $30 | Bybit Futures | Grid Bot (SOL/USDT:USDT, 20 grids, 3x leverage, ATR dinâmico) |
 | 2 | $25 | IC Markets MT5 | Forex Breakout (GBP/USD + EUR/JPY, range asiático) |
 | 3 | $25 | Polymarket CLOB | Modelo Claude API (edge mín 12% vs preço de mercado) |
-| 4 | $15 | Bybit Futures | Momentum Scalper (vol 3x médio + VWAP, 5x leverage) |
+| 4 | $20 | Bybit Futures | Momentum Scalper (vol 2x médio + VWAP, 5x leverage) |
+
+> **Nota:** Grid Bot foi migrado de Binance → Bybit (Binance Futures geo-bloqueada no Brasil).
+> Grid + Momentum compartilham a mesma instância Bybit e saldo (~$50 total).
 
 **Proteção de risco:**
 
@@ -27,8 +30,7 @@ Bot de trading automatizado com 4 estratégias descorrelacionadas, orquestradas 
 
 ### Contas e depósitos
 
-- [Binance](https://www.binance.com) — conta Futures, mín. $35
-- [Bybit](https://www.bybit.com) — conta Futures, mín. $15
+- [Bybit](https://www.bybit.com) — conta Futures, mín. $50 (Grid Bot + Momentum)
 - [Polymarket](https://polymarket.com) — carteira Polygon, mín. $25
 - [IC Markets](https://www.icmarkets.com) — conta MT5 Raw Spread, mín. $25 *(opcional, Forex EA independente)*
 
@@ -36,7 +38,6 @@ Bot de trading automatizado com 4 estratégias descorrelacionadas, orquestradas 
 
 | Serviço | Permissões necessárias |
 |---------|----------------------|
-| Binance | Leitura + Futures Trading (sem saque) |
 | Bybit | Leitura + Futures Trading (sem saque) |
 | Polymarket | CLOB API key via [docs](https://docs.polymarket.com/) |
 | Anthropic | API key em [console.anthropic.com](https://console.anthropic.com) |
@@ -77,8 +78,6 @@ PAPER_TRADE=true          # mantenha true para começar
 ANTHROPIC_API_KEY=sk-ant-...   # obrigatório para Polymarket
 
 # Opcionais em paper trading (bot simula sem eles):
-BINANCE_API_KEY=
-BINANCE_SECRET=
 BYBIT_API_KEY=
 BYBIT_SECRET=
 
@@ -88,7 +87,7 @@ TELEGRAM_CHAT_ID=
 ```
 
 > Em paper trading, apenas `ANTHROPIC_API_KEY` é obrigatório (para o modelo Polymarket).
-> As exchanges Binance e Bybit ainda buscam preços reais via API pública (sem autenticação).
+> A Bybit ainda busca preços reais via API pública (sem autenticação).
 
 ### 3. Rodar
 
@@ -115,7 +114,7 @@ streamlit run dashboard/app.py
 
 ### Por que Droplet e não App Platform?
 
-- **IP fixo** — necessário para whitelist nas exchanges (Binance, Bybit)
+- **IP fixo** — necessário para whitelist na Bybit
 - **Disco persistente** — `state/*.json` sobrevive a restarts e reboots
 - **Controle total** — SSH direto, logs em tempo real, fácil troubleshooting
 - **Custo similar** — Basic Droplet $6/mês (1 vCPU, 1GB RAM) ou $12/mês (2GB RAM)
@@ -136,7 +135,7 @@ DO Droplet: desafio-100-200 (Frankfurt — fra1)
 
 1. Acesse [cloud.digitalocean.com/droplets](https://cloud.digitalocean.com/droplets)
 2. **Create Droplet** com as seguintes opções:
-   - **Região:** Frankfurt (`fra1`) — Binance não é geo-bloqueada na Europa
+   - **Região:** Frankfurt (`fra1`) — baixa latência para Bybit
    - **Imagem:** Ubuntu 24.04 LTS
    - **Plano:** Basic → Regular → **$6/mês** (1 vCPU, 1 GB RAM) ou **$12/mês** (2 GB) se quiser mais folga
    - **Authentication:** SSH key (recomendado) ou senha
@@ -154,7 +153,6 @@ DO Droplet: desafio-100-200 (Frankfurt — fra1)
 
 Com o IP fixo em mãos, configure nas exchanges:
 
-- **Binance:** API Management → Edit → IP Access → adicionar o Reserved IP
 - **Bybit:** API Management → Edit → IP restriction → adicionar o Reserved IP
 
 #### 4. Setup do Servidor
@@ -199,8 +197,6 @@ Preencha todas as variáveis:
 ```env
 PAPER_TRADE=true
 
-BINANCE_API_KEY=...
-BINANCE_SECRET=...
 BYBIT_API_KEY=...
 BYBIT_SECRET=...
 POLY_API_KEY=...
@@ -389,7 +385,7 @@ desafio-100-200/
 │   ├── base.py           # Interface: tick(), close_all(), resize(), get_pnl()
 │   ├── paper_exchange.py # Wrapper ccxt para simulação sem capital real
 │   ├── state_manager.py  # Crash recovery: state/*.json
-│   ├── grid_bot/         # Perna 1 — Binance Futures
+│   ├── grid_bot/         # Perna 1 — Bybit Futures (migrado de Binance)
 │   ├── momentum/         # Perna 4 — Bybit Futures
 │   └── polymarket/       # Perna 3 — Polymarket CLOB + Claude API
 │
@@ -416,17 +412,18 @@ desafio-100-200/
 
 ## Troubleshooting
 
-### Bot não conecta na Binance/Bybit
+### Bot não conecta na Bybit
 
 - Verifique se as API keys têm permissão Futures
-- Confirme que o **Reserved IP do Droplet** está na whitelist da exchange
+- Confirme que o **Reserved IP do Droplet** está na whitelist da Bybit
 - Confirme que a conta tem saldo em Futures (não só Spot)
 - No paper trading, a conexão é feita mas ordens são simuladas
 
-### Binance: HTTP 451 / "restricted location"
+### Bybit: erros de autenticação
 
-- A Binance bloqueia requests de IPs nos EUA. Use Droplet na Europa (Frankfurt `fra1`)
-- O orchestrator detecta este erro automaticamente e desabilita a perna (sem crash)
+- Verifique se a API key tem permissões de Futures Trading
+- Confirme que o IP do servidor está na whitelist
+- Grid Bot e Momentum compartilham a mesma instância — ambos desabilitam se Bybit inacessível
 
 ### Polymarket: 0 candidatos encontrados
 

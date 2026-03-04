@@ -28,17 +28,18 @@
 
 ## Alocação de Capital
 
-### Perna 1: Grid Trading Bot — $35 (35%)
+### Perna 1: Grid Trading Bot — $30 (30%)
 
-- **Plataforma:** Binance Futures
+- **Plataforma:** Bybit Futures (migrado de Binance — geo-bloqueada no Brasil)
 - **Target:** +5-8%/dia
-- **Por que 35%:** É a perna mais previsível. Grid bots em pares de alta liquidez com alavancagem 3-5x geram retornos consistentes em mercado volátil. É o "motor base" do portfólio.
+- **Por que Bybit:** Binance Futures é inacessível do Brasil. Bybit já é usada pelo Momentum Scalper, simplificando a operação (1 exchange para 2 pernas crypto).
 - **Config:**
-  - Par: SOL/USDT perp (volatilidade alta + liquidez)
+  - Par: SOL/USDT:USDT perp (volatilidade alta + liquidez)
   - Grids: 20 níveis, range dinâmico baseado em ATR(24h)
   - Alavancagem: 3x (margem isolada)
   - Profit per grid: ~0.25-0.4%
   - Reinvestimento: automático a cada 12h
+  - **Nota:** Grid + Momentum compartilham a mesma instância ccxt.bybit e saldo Bybit (~$50 total)
 
 ### Perna 2: Session Breakout Forex — $25 (25%)
 
@@ -68,11 +69,11 @@
   - 2-4 posições simultâneas
   - Diversificar entre categorias (política, tech, esportes)
 
-### Perna 4: Momentum Scalper — $15 (15%)
+### Perna 4: Momentum Scalper — $20 (20%)
 
 - **Plataforma:** Bybit Futures
 - **Target:** +10-25%/dia
-- **Por que 15%:** Perna de "convexidade". Capital menor porque é a mais arriscada, mas com potencial de retorno assimétrico.
+- **Por que 20%:** Perna de "convexidade". Capital menor porque é a mais arriscada, mas com potencial de retorno assimétrico.
 - **Config:**
   - Monitorar top 30 altcoins por volume 24h
   - Trigger: volume 3x acima da média + preço rompendo VWAP
@@ -109,7 +110,7 @@
 │
 ├── strategies/
 │   ├── grid_bot/
-│   │   ├── engine.py         # Lógica do grid (ccxt + Binance)
+│   │   ├── engine.py         # Lógica do grid (ccxt + Bybit)
 │   │   └── config.yaml       # Params: grids, range, leverage
 │   │
 │   ├── forex_breakout/
@@ -157,10 +158,10 @@ async def main_loop():
     notify = TelegramNotifier(chat_id=CHAT_ID)
 
     strategies = [
-        GridBot(alloc=0.35, exchange="binance"),
+        GridBot(alloc=30.0, exchange="bybit"),
         ForexBreakout(alloc=0.25, broker="icmarkets"),
-        PolymarketModel(alloc=0.25),
-        MomentumScalper(alloc=0.15, exchange="bybit"),
+        PolymarketModel(alloc=25.0),
+        MomentumScalper(alloc=20.0, exchange="bybit"),
     ]
 
     while True:
@@ -195,11 +196,7 @@ async def main_loop():
 ### Chaves de API Necessárias (.env)
 
 ```env
-# Binance (Grid Bot)
-BINANCE_API_KEY=
-BINANCE_SECRET=
-
-# Bybit (Momentum)
+# Bybit (Grid Bot + Momentum)
 BYBIT_API_KEY=
 BYBIT_SECRET=
 
@@ -226,7 +223,7 @@ TELEGRAM_CHAT_ID=
 ## Dependências
 
 ```txt
-ccxt>=4.0              # Binance + Bybit
+ccxt>=4.0              # Bybit (Grid Bot + Momentum)
 py-clob-client         # Polymarket CLOB
 anthropic              # Claude API (modelo)
 python-telegram-bot    # Notificações
@@ -247,7 +244,7 @@ python-dotenv          # .env loading
 
 | Hora  | Ação |
 |-------|------|
-| 14:00 | Depositar $35 na Binance, $25 na IC Markets, $25 na Polymarket, $15 na Bybit |
+| 14:00 | Depositar $50 na Bybit (Grid+Momentum), $25 na IC Markets, $25 na Polymarket |
 | 16:00 | Configurar API keys em todas as plataformas |
 | 18:00 | Deploy dos bots (VPS ou local via Docker) |
 | 20:00 | Testar cada estratégia com $1-2 em modo real |
@@ -335,7 +332,7 @@ python-dotenv          # .env loading
 
 ### Cenários de Risco Específicos
 
-- **Flash crash de crypto:** Grid bot sofre. Mitigação: margem isolada + stop no grid inferior. Máx perda: ~$15-20.
+- **Flash crash de crypto:** Grid bot e Momentum sofrem (ambos na Bybit). Mitigação: margem isolada + stop no grid inferior + correlação guard (máx 50% long). Máx perda crypto: ~$15-20.
 - **Mercado lateral sem volume:** Grid ganha pouco, momentum sem oportunidades, forex falha (falsos breakouts). Mitigação: Polymarket é independente.
 - **Polymarket apostas erradas:** Eventos resolvem contra. Mitigação: max $8-10/posição, diversificar em 3+ mercados.
 - **Problemas técnicos:** API cai, bot crasha, latência. Mitigação: Docker restart automático, stop loss na exchange (não só no bot), heartbeat via Telegram.
@@ -363,7 +360,7 @@ pip install -r requirements.txt
 
 | # | Módulo              | Status |
 |---|---------------------|--------|
-| 1 | Grid Bot (Binance)  | ✅ DONE — `strategies/grid_bot/engine.py` |
+| 1 | Grid Bot (Bybit)    | ✅ DONE — `strategies/grid_bot/engine.py` (migrado de Binance) |
 | 2 | Forex Breakout (MT5)| ✅ DONE — `SessionBreakout/SessionBreakout_v1.mq5` |
 | 3 | Polymarket Model    | ✅ DONE — `strategies/polymarket/` |
 | 4 | Momentum Scanner    | ✅ DONE — `strategies/momentum/` |
@@ -437,7 +434,7 @@ DO Droplet: desafio-100-200 (Frankfurt — fra1)
 
 Ao trabalhar neste projeto, considere:
 
-- **Para Grid Bot:** usar `ccxt` library. Exchange `binance`. Futures API com margem isolada. Precisa calcular ATR para range dinâmico.
+- **Para Grid Bot:** usar `ccxt` library. Exchange `bybit`. Futures API com margem isolada. Precisa calcular ATR para range dinâmico. Compartilha instância Bybit com Momentum — atenção à correlação (máx 50% long crypto simultâneo).
 - **Para Forex:** EA já pronto em MQL5. Se precisar integrar com orchestrator Python, usar MetaApi cloud wrapper como ponte.
 - **Para Polymarket:** usar `py-clob-client` para CLOB API. Usar `anthropic` SDK para o modelo de probabilidades. O modelo deve receber contexto do evento + dados relevantes e retornar uma estimativa de probabilidade.
 - **Para Momentum:** websocket real-time via `ccxt.pro` ou `aiohttp` direto na Bybit WS API. Scanner de volume precisa ser eficiente (processar 30+ pares em parallel).

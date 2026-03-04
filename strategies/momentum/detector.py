@@ -90,7 +90,7 @@ class MomentumDetector:
                 len(signals), len(self._top_symbols),
             )
         else:
-            log.debug("Momentum: 0 sinais de %d símbolos", len(self._top_symbols))
+            log.info("Momentum: 0 sinais de %d símbolos (vol_mult=%.1fx)", len(self._top_symbols), self.volume_multiplier)
         return signals
 
     # ─────────────────────────────────────────────
@@ -179,6 +179,14 @@ class MomentumDetector:
                     vwap=vwap,
                     volume_ratio=vol_ratio,
                 )
+            else:
+                # Log dos quase-sinais para debug (top candidatos)
+                if vol_ratio >= self.volume_multiplier * 0.7:
+                    log.debug(
+                        "Quase-sinal: %s | price=%.4f vwap=%.4f vol=%.1fx (%s)",
+                        symbol, current_price, vwap, vol_ratio,
+                        "price<VWAP" if current_price <= vwap else "vol<threshold",
+                    )
         except Exception as exc:
             log.debug("Erro ao analisar %s: %s", symbol, exc)
 

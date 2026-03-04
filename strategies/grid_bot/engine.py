@@ -20,7 +20,7 @@ class GridBot(BaseStrategy):
     def __init__(self, config: dict, exchange, allocation: float, paper_trade: bool = False):
         super().__init__("grid_bot", allocation, paper_trade)
         self.cfg = config
-        self.ex = exchange  # ccxt.binance ou PaperExchange(ccxt.binance)
+        self.ex = exchange  # ccxt.bybit ou PaperExchange(ccxt.bybit)
 
         self.symbol: str = config["symbol"]
         self.leverage: int = config["leverage"]
@@ -183,8 +183,8 @@ class GridBot(BaseStrategy):
             await self.ex.set_leverage(self.leverage, symbol_ccxt)
             await self.ex.set_margin_mode(self.margin_mode, symbol_ccxt)
         except ccxt.ExchangeError as e:
-            # Binance retorna erro se alavancagem já está configurada — ignorar
-            if "No need to change leverage" not in str(e) and "marginType" not in str(e):
+            # Bybit/Binance retorna erro se alavancagem já está configurada — ignorar
+            if "No need to change leverage" not in str(e) and "marginType" not in str(e) and "not modified" not in str(e).lower():
                 raise
 
     # ─────────────────────────────────────────────
@@ -456,7 +456,16 @@ class GridBot(BaseStrategy):
         self.pnl_realized = state.get("pnl_realized", 0.0)
         saved_alloc       = state.get("allocation",   self.allocation)
         if saved_alloc > 0:
-            self.allocation = saved_alloc
+            # Cap: nunca restaurar alocação maior que a inicial (pode ser state antigo)
+            if saved_alloc > self.initial_allocation * 1.5:
+                log.warning(
+                    "Grid Bot: alocação salva ($%.2f) muito acima da inicial ($%.2f) "
+                    "— possível state antigo. Usando alocação inicial.",
+                    saved_alloc, self.initial_allocation,
+                )
+                self.allocation = self.initial_allocation
+            else:
+                self.allocation = saved_alloc
 
         saved_buy  = {int(k): v for k, v in state.get("buy_orders",  {}).items()}
         saved_sell = {int(k): v for k, v in state.get("sell_orders", {}).items()}
@@ -486,7 +495,7 @@ class GridBot(BaseStrategy):
         active = len(self.buy_orders) + len(self.sell_orders)
         total  = len(saved_buy) + len(saved_sell)
         log.info(
-            "Grid Bot: reconciliação — %d/%d ordens ativas na Binance | P&L=%.2f",
+            "Grid Bot: reconciliação — %d/%d ordens ativas na Bybit | P&L=%.2f",
             active, total, self.pnl_realized,
         )
 
