@@ -67,6 +67,7 @@ class PolymarketModel(BaseStrategy):
     def __init__(self, config: dict, allocation: float, paper_trade: bool = False):
         super().__init__("polymarket", allocation, paper_trade)
         self.cfg = config
+        self.min_position_usd = float(config.get("min_position_usd", 5.0))  # CLOB min = 5
         self.max_position_usd = float(config.get("max_position_usd", 10.0))
         self.max_open = int(config.get("max_open_positions", 4))
         self.scan_interval = int(config.get("scan_interval_minutes", 30)) * 60
@@ -187,6 +188,10 @@ class PolymarketModel(BaseStrategy):
     # Lógica de scan e aposta
     # ─────────────────────────────────────────────
 
+    def _capital_in_positions(self) -> float:
+        """Retorna capital total alocado em posições abertas."""
+        return sum(p.amount_usd for p in self._positions.values() if not p.closed)
+
     async def _scan_and_bet(self) -> None:
         """Busca candidatos → analisa com Claude → aposta quando há edge."""
         open_count = sum(1 for p in self._positions.values() if not p.closed)
@@ -215,7 +220,13 @@ class PolymarketModel(BaseStrategy):
                 self.max_position_usd,
                 self.allocation * analysis["abs_edge"] * 0.5,
             )
-            amount = max(1.0, round(amount, 2))
+            # Polymarket CLOB exige tamanho mínimo de $5 por ordem
+            amount = max(self.min_position_usd, round(amount, 2))
+
+            # Se não tem saldo suficiente para o mínimo, pular
+            if amount > self.allocation - self._capital_in_positions():
+                log.debug("Saldo insuficiente para posição mínima $%.2f", amount)
+                continue
 
             await self._place_bet(market, analysis, amount)
             open_count += 1

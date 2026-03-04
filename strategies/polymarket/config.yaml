@@ -1,6 +1,7 @@
 # Polymarket Model — Perna 3
 min_volume_usd: 50000        # Volume mínimo do mercado para considerar
 min_edge_pct: 12             # Edge mínimo estimado vs preço de mercado (%)
+min_position_usd: 5          # Tamanho mínimo por posição ($ — Polymarket CLOB exige >= 5)
 max_position_usd: 10         # Tamanho máximo por posição ($)
 max_open_positions: 4        # Máximo de posições simultâneas
 categories:                  # Categorias de mercado aceitas
