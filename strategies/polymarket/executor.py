@@ -76,6 +76,8 @@ class PolymarketModel(BaseStrategy):
 
         self._positions: dict[str, Position] = {}  # condition_id → Position
         self._last_scan: float = 0.0
+        self._last_pnl_update: float = 0.0
+        self._pnl_update_interval: float = 300.0  # atualiza P&L a cada 5 min
         self._realized_pnl: float = 0.0
         self._state_loaded: bool = False  # flag: recovery executado?
 
@@ -124,9 +126,11 @@ class PolymarketModel(BaseStrategy):
             self._state_loaded = True
             self._load_state()
 
-        await self._update_positions_pnl()
-
         now = time.time()
+        if now - self._last_pnl_update >= self._pnl_update_interval:
+            await self._update_positions_pnl()
+            self._last_pnl_update = now
+
         if now - self._last_scan >= self.scan_interval:
             await self._scan_and_bet()
             self._last_scan = now

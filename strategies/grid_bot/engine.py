@@ -83,8 +83,8 @@ class GridBot(BaseStrategy):
                 await self.close_all()
                 await self._open_grid()
 
-            # Checar ordens preenchidas e recolocar opostas
-            await self._process_fills()
+            # Checar ordens preenchidas e recolocar opostas (passa preço já obtido)
+            await self._process_fills(price)
 
             # Reinvestimento automático
             await self._maybe_reinvest()
@@ -250,7 +250,7 @@ class GridBot(BaseStrategy):
     # Processar ordens preenchidas
     # ─────────────────────────────────────────────
 
-    async def _process_fills(self) -> None:
+    async def _process_fills(self, current_price: float = 0.0) -> None:
         """Verifica ordens preenchidas e coloca ordem oposta no nível adjacente."""
         try:
             open_orders = await self.ex.fetch_open_orders(self.symbol)
@@ -259,7 +259,9 @@ class GridBot(BaseStrategy):
             return
 
         open_ids = {o["id"] for o in open_orders}
-        order_size = self._order_size(await self._get_price())
+        if current_price <= 0:
+            current_price = await self._get_price()
+        order_size = self._order_size(current_price)
         precision = self._price_precision()
 
         # Checar buys preenchidos

@@ -47,21 +47,30 @@ class MomentumDetector:
         self._symbols_ttl = 3600.0            # refresh da lista a cada 1h
         self._top_symbols: list[str] = []
         self._last_symbols_ts: float = 0.0
+        # Intervalo mínimo entre scans completos (evita 30 fetch_ohlcv a cada tick)
+        self._scan_interval = float(config.get("scan_interval_seconds", 300))  # 5 min
+        self._last_scan_ts: float = 0.0
+        self._cached_signals: list[Signal] = []
 
     async def get_signals(self) -> list[Signal]:
         """
         Retorna lista de sinais de breakout prontos para execução.
         Cada sinal contém: symbol, side, current_price, vwap, volume_ratio.
+        Resultado é cacheado por scan_interval_seconds (padrão: 5 min).
         """
         if not _PANDAS_AVAILABLE:
             return []
+
+        now = time.time()
+        if now - self._last_scan_ts < self._scan_interval:
+            return self._cached_signals
 
         await self._refresh_top_symbols()
         if not self._top_symbols:
             return []
 
         # Verifica todos os símbolos em paralelo (com limite de concorrência)
-        sem = asyncio.Semaphore(10)  # max 10 requisições simultâneas
+        sem = asyncio.Semaphore(5)  # max 5 requisições simultâneas (reduz pico de CPU)
 
         async def check_with_sem(sym: str) -> Signal | None:
             async with sem:
@@ -73,11 +82,15 @@ class MomentumDetector:
         )
 
         signals = [r for r in results if isinstance(r, Signal)]
+        self._cached_signals = signals
+        self._last_scan_ts = now
         if signals:
             log.info(
                 "Momentum: %d sinais detectados de %d símbolos",
                 len(signals), len(self._top_symbols),
             )
+        else:
+            log.debug("Momentum: 0 sinais de %d símbolos", len(self._top_symbols))
         return signals
 
     # ─────────────────────────────────────────────
