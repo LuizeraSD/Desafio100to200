@@ -1,0 +1,15 @@
+# Forex Session Breakout — Perna 2 (IC Markets MT5)
+# EA MQL5: SessionBreakout/SessionBreakout_v1.mq5
+# Roda direto no MetaTrader 5 — independente do Python.
+broker: icmarkets
+account_type: raw_spread     # Raw Spread: spread ~0.0, comissão $3.50/lot
+pairs:
+  - GBPUSD
+  - EURJPY
+asian_session_start_gmt: 0   # 00:00 GMT
+asian_session_end_gmt: 8     # 08:00 GMT
+tp_multiplier: 1.5           # TP = 1.5x range asiático
+sl_multiplier: 0.5           # SL = 0.5x range asiático (R:R = 3:1)
+max_trades_per_day: 2
+risk_per_trade_pct: 5.0
+# MT5 EA path: ../../../SessionBreakout/SessionBreakout_v1.mq5

@@ -1,0 +1,87 @@
+# Digital Ocean Apps — especificação do deployment
+# Documentação: https://docs.digitalocean.com/products/app-platform/reference/app-spec/
+#
+# ANTES DE USAR:
+#   1. Substitua SEU_USUARIO/desafio-100-200 pelo seu repositório GitHub
+#   2. Configure os secrets no painel DO (Settings > App-Level Environment Variables)
+#   3. Inicie com PAPER_TRADE=true por 48h antes de ativar live
+
+name: desafio-100-200
+region: nyc1
+
+services:
+  - name: bot
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: SEU_USUARIO/desafio-100-200   # <-- alterar para seu repo
+      branch: main
+      deploy_on_push: false   # deploy manual — mais seguro com capital real
+
+    http_port: 8501
+
+    health_check:
+      http_path: /_stcore/health   # endpoint nativo do Streamlit
+      initial_delay_seconds: 60    # dá tempo para o orchestrator inicializar
+      timeout_seconds: 10
+      failure_threshold: 3
+
+    instance_count: 1
+    instance_size_slug: basic-xs   # 1 vCPU, 1 GB RAM — $12/mês
+
+    envs:
+      # ── Modo de operação ────────────────────────────────────────────────────
+      - key: PAPER_TRADE
+        value: "true"              # MUDE PARA "false" apenas após validar em paper
+        scope: RUN_AND_BUILD_TIME
+
+      # ── Dashboard (protege o acesso público) ────────────────────────────────
+      - key: DASHBOARD_PASSWORD
+        scope: RUN_TIME
+        type: SECRET               # configurar no painel DO
+
+      # ── Binance (Grid Bot) ──────────────────────────────────────────────────
+      - key: BINANCE_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: BINANCE_SECRET
+        scope: RUN_TIME
+        type: SECRET
+
+      # ── Bybit (Momentum Scalper) ────────────────────────────────────────────
+      - key: BYBIT_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: BYBIT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+
+      # ── Polymarket CLOB ─────────────────────────────────────────────────────
+      - key: POLY_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: POLY_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: POLY_PASSPHRASE
+        scope: RUN_TIME
+        type: SECRET
+
+      # ── Claude API (modelo de probabilidades Polymarket) ────────────────────
+      - key: ANTHROPIC_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+
+      # ── Telegram (notificações e comandos) ──────────────────────────────────
+      - key: TELEGRAM_BOT_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+      - key: TELEGRAM_CHAT_ID
+        scope: RUN_TIME
+        type: SECRET
+
+    # ── Volume persistente para crash recovery ──────────────────────────────
+    # Persiste state/*.json entre restarts e redeploys ($0.10/GB/mês)
+    storage_mounts:
+      - name: state-data
+        mount_path: /app/state

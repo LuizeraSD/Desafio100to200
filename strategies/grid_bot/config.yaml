@@ -1,0 +1,15 @@
+# Grid Bot — Perna 1 (Binance Futures)
+symbol: SOL/USDT         # Par perpétuo
+leverage: 3              # Alavancagem (margem isolada)
+margin_mode: isolated
+
+# Grid
+num_grids: 20            # Número de níveis
+atr_period: 24           # Período ATR em velas de 1h
+atr_multiplier: 2.0      # Range = preço ± ATR * multiplier
+
+# Reinvestimento automático
+reinvest_interval_hours: 12
+
+# Circuit breaker
+circuit_breaker_pct: 40  # Desliga se perder 40% da alocação

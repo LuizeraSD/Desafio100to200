@@ -1,0 +1,11 @@
+# Polymarket Model — Perna 3
+min_volume_usd: 50000        # Volume mínimo do mercado para considerar
+min_edge_pct: 12             # Edge mínimo estimado vs preço de mercado (%)
+max_position_usd: 10         # Tamanho máximo por posição ($)
+max_open_positions: 4        # Máximo de posições simultâneas
+categories:                  # Categorias de mercado aceitas
+  - politics
+  - technology
+  - sports
+  - crypto
+scan_interval_minutes: 30    # Intervalo entre scans de mercado

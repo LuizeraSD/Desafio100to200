@@ -1,0 +1,10 @@
+ccxt>=4.0
+ccxt[pro]>=4.0
+py-clob-client
+anthropic>=0.20
+python-telegram-bot>=20.0
+aiohttp
+pandas
+pyyaml
+python-dotenv
+streamlit

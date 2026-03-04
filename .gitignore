@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.py[cod]
+*.log
+*.sqlite3
+.venv/
+venv/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
+
+# Estado em runtime (crash recovery, portfólio, cache Polymarket)
+state/
+
+# Logs do container
+logs/
+
+# Binários compilados MQL5
+*.ex5
